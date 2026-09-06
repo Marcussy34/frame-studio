@@ -1,0 +1,32 @@
+node_modules/
+dist/
+.firecrawl/
+.codebase-memory/
+test-results/
+playwright-report/
+.DS_Store
+.desktop-build/
+release/
+
+# Local working notes and machine-specific verification records.
+docs/superpowers/
+docs/verification.md
+docs/desktop-verification.md
+
+# Credentials, signing material, logs, and user media.
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.log
+*.mov
+*.mp4
+*.m4v
+*.webm
+*.mkv
+*.avi
+*.mp3
+*.wav

@@ -1,0 +1,9 @@
+node_modules
+dist
+.codebase-memory
+.firecrawl
+test-results
+playwright-report
+package-lock.json
+.desktop-build
+release
