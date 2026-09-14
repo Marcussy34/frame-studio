@@ -119,7 +119,7 @@ export function useStudio() {
       try {
         const status = await api<{
           recording: boolean;
-          last: { id: string } | null;
+          last: { id: string; noCursorData?: boolean } | null;
         }>('/api/recording/status');
         if (cancelled) return;
         if (status.recording) {
@@ -127,7 +127,16 @@ export function useStudio() {
           return;
         }
         setRecording(false);
-        if (status.last) await openRecording(status.last.id);
+        if (status.last) {
+          await openRecording(status.last.id);
+          // The video looks perfectly fine in this case, so nothing else would tell
+          // the user why their cursor is missing.
+          if (status.last.noCursorData) {
+            setError(
+              'This recording has no cursor data. Enable Input Monitoring for Frame Studio in System Settings, Privacy and Security, then quit and reopen the app.',
+            );
+          }
+        }
       } catch (reason) {
         if (cancelled) return;
         setRecording(false);

@@ -10,6 +10,8 @@ export interface RecordingResult {
   duration: number;
   // Present only when a display change stopped the stream early.
   interrupted?: string;
+  // The video recorded but no cursor events arrived, so the cursor cannot be drawn.
+  noCursorData?: boolean;
 }
 
 export interface Recorder {
@@ -84,9 +86,18 @@ export function createRecorder(binaryPath: string): Recorder {
         settle: (event) => {
           clearTimeout(timer);
           if (event.event === 'error') reject(new Error(String(event.message)));
-          else if (event.event === 'permission-required')
-            reject(new Error(`permission required: ${String(event.permission)}`));
-          else resolve(event);
+          else if (event.event === 'permission-required') {
+            // The wording matters here: these two permissions live in different panes
+            // and the Input Monitoring one is not obvious from the symptom.
+            const which = String(event.permission);
+            reject(
+              new Error(
+                which === 'input-monitoring'
+                  ? 'Frame Studio needs Input Monitoring to record the cursor. Enable it in System Settings, Privacy and Security, Input Monitoring, then quit and reopen Frame Studio.'
+                  : 'Frame Studio needs Screen Recording. Enable it in System Settings, Privacy and Security, Screen and System Audio Recording, then quit and reopen Frame Studio.',
+              ),
+            );
+          } else resolve(event);
         },
         fail: (error) => {
           clearTimeout(timer);
@@ -122,6 +133,7 @@ export function createRecorder(binaryPath: string): Recorder {
         clicks: reply.clicks as number,
         duration: reply.duration as number,
         interrupted: reply.interrupted as string | undefined,
+        noCursorData: reply.noCursorData as boolean | undefined,
       };
     },
     dispose() {

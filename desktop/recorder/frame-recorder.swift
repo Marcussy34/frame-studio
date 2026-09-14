@@ -305,6 +305,20 @@ func startRecording(
         ])
         return nil
     }
+    // A listen-only mouse tap still needs Input Monitoring. Without it the tap is
+    // created successfully but never delivers a single event, which produces a
+    // recording with an empty cursor track and no error anywhere. Checking up front
+    // turns a silent failure into something the app can explain.
+    guard CGPreflightListenEventAccess() else {
+        _ = CGRequestListenEventAccess()
+        emit([
+            "event": "permission-required",
+            "permission": "input-monitoring",
+            "needsRestart": true,
+        ])
+        return nil
+    }
+
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
@@ -459,6 +473,9 @@ func finishRecording(_ session: RecordingSession) async {
         // Absent on a normal stop, so the bridge only explains itself when something
         // actually went wrong.
         if let reason = session.interruption.reason { finished["interrupted"] = reason }
+        // Callers need to know the cursor track came back empty, since the video looks
+        // perfectly fine and nothing else would reveal it.
+        if written.count == 0 { finished["noCursorData"] = true }
         emit(finished)
     } catch {
         emitError("could not finalise recording: \(error.localizedDescription)")

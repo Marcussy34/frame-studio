@@ -5,15 +5,26 @@ from Apple's documentation.
 
 ## Summary
 
-| Permission       | Needed for                                                                  | How it is granted                                              |
-| ---------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Screen Recording | `SCShareableContent` and `SCStream`, so both listing displays and capturing | System prompt on first use, then the process must be restarted |
-| Input Monitoring | The `CGEventTap` that logs cursor position and clicks                       | System Settings, Privacy and Security                          |
-| Accessibility    | Not required for a listen-only mouse tap                                    | Not requested                                                  |
+| Permission       | Needed for                                                                  | How it is granted                                                                |
+| ---------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Screen Recording | `SCShareableContent` and `SCStream`, so both listing displays and capturing | System prompt on first use, then the process must be restarted                   |
+| Input Monitoring | The `CGEventTap` that logs cursor position and clicks                       | System Settings, Privacy and Security, Input Monitoring. **Required**, see below |
+| Accessibility    | Not required for a listen-only mouse tap                                    | Not requested                                                                    |
 
-Screen Recording is the only one the helper prompts for. The others were already granted
-on the test machine, so their necessity is inferred from Apple's API contracts rather than
-observed failing, which is noted as a gap below.
+**Input Monitoring is genuinely required**, and this was confirmed the unpleasant way.
+After the app was given a new code signing identity, its existing Input Monitoring grant
+no longer applied. Screen recording still worked perfectly, so the video looked fine,
+but the event tap delivered **zero events** and the recording came back with an empty
+cursor track and no error anywhere.
+
+That answers a question left open earlier: Apple's documentation only ties event tap
+permission to _key_ events, but a listen-only **mouse** tap needs Input Monitoring too.
+`CGEvent.tapCreate` still succeeds without it. The tap is simply never fed.
+
+The helper now calls `CGPreflightListenEventAccess()` before recording and reports
+`permission-required` with `input-monitoring` rather than producing a silently broken
+bundle, and a finished recording that captured no cursor events is flagged with
+`noCursorData` so the app can explain itself.
 
 ## Does the bundled helper need its own grant?
 

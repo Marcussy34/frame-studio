@@ -96,6 +96,8 @@ export interface RecordingOutcome {
   duration: number;
   // Present only when a display change stopped the stream early.
   interrupted?: string;
+  // The video recorded but no cursor events arrived, so the cursor cannot be drawn.
+  noCursorData?: boolean;
 }
 
 // Implemented by the desktop process and injected into the local API, the same way
