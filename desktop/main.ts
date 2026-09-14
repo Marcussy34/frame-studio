@@ -17,6 +17,7 @@ import { canvasStorageKey } from '../shared/composition';
 import type { RecordingService } from '../shared/recording';
 import { type CursorTracker, createCursorTracker } from './cursor-track';
 import { createRecorder } from './recorder-bridge';
+import { createZoomPlanner, createZoomPlanService } from './zoom-plan-service';
 import { createRecordingService } from './recording-service';
 import { hideStopWindow, showStopWindow } from './stop-window';
 import { selectRegion } from './region-select';
@@ -158,12 +159,23 @@ else {
       });
     }
 
+    // Camera planning needs the Antigravity CLI, which most machines will not have.
+    // Absent simply means the app never offers the button, the same way a missing
+    // capture helper disables recording rather than breaking the app.
+    const zoomPlanner = createZoomPlanner();
+    const planner = zoomPlanner.available()
+      ? createZoomPlanService({ planner: zoomPlanner, ffmpeg })
+      : undefined;
+    if (!planner)
+      console.warn('Camera planning is unavailable: the Antigravity CLI was not found.');
+
     const { startDesktopRuntime } = await import('./runtime');
     runtime = await startDesktopRuntime({
       rendererPath: join(app.getAppPath(), 'renderer'),
       preferencesPath: join(app.getPath('userData'), 'canvas.json'),
       recording,
       recordingsRoot,
+      planner,
     });
     if (quitRequested) return;
     const origin = runtime.origin;

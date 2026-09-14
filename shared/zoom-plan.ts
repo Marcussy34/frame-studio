@@ -99,37 +99,43 @@ export function compileZoomPlan(
   // deciding whether to.
   const path = smoothPath(events, { smoothing: 0 }, duration);
 
+  // Where a shot wants the frame pointed, in source pixels.
+  const focusOf = (shot: ZoomShot, t: number) => {
+    if (shot.focus !== 'cursor') {
+      return { x: shot.focus.x * source.width, y: shot.focus.y * source.height };
+    }
+    const origin = captureOriginAt(frames, t);
+    const point = path.at(t);
+    return {
+      x: (point.x - (origin?.x ?? 0)) * displayScale,
+      y: (point.y - (origin?.y ?? 0)) * displayScale,
+    };
+  };
+
+  // Start already pointed at the first shot. The centre is invisible at zoom 1, so
+  // beginning at the default origin costs nothing to see but makes the frame race
+  // diagonally across the picture while that first shot's zoom is already rising.
+  const first = normalised.shots[0];
+  const opening = focusOf(first, first.start);
+
   // Shots are ordered and non-overlapping after normalisePlan, so a cursor that only
   // moves forward can find the active one without scanning the whole list every step.
   let index = 0;
-  const raw = integrateZoom(duration, (t, current) => {
-    while (index < normalised.shots.length && t > normalised.shots[index].end) index += 1;
-    const shot = normalised.shots[index];
-    if (!shot || t < shot.start) {
-      // Between shots the frame eases back out and holds where it is, rather than
-      // drifting with the pointer, which is far less nauseating to watch.
-      return { z: 1, x: current.cx, y: current.cy, tension: STIFFNESS.normal };
-    }
-    const tension = STIFFNESS[shot.ease];
-    if (shot.focus === 'cursor') {
-      const origin = captureOriginAt(frames, t);
-      const point = path.at(t);
-      return {
-        z: shot.zoom,
-        x: (point.x - (origin?.x ?? 0)) * displayScale,
-        y: (point.y - (origin?.y ?? 0)) * displayScale,
-        tension,
-      };
-    }
-    // A fixed focus is normalised to the captured frame, so it scales to whatever the
-    // source resolution turned out to be.
-    return {
-      z: shot.zoom,
-      x: shot.focus.x * source.width,
-      y: shot.focus.y * source.height,
-      tension,
-    };
-  });
+  const raw = integrateZoom(
+    duration,
+    (t, current) => {
+      while (index < normalised.shots.length && t > normalised.shots[index].end) index += 1;
+      const shot = normalised.shots[index];
+      if (!shot || t < shot.start) {
+        // Between shots the frame eases back out and holds where it is, rather than
+        // drifting with the pointer, which is far less nauseating to watch.
+        return { z: 1, x: current.cx, y: current.cy, tension: STIFFNESS.normal };
+      }
+      const point = focusOf(shot, t);
+      return { z: shot.zoom, x: point.x, y: point.y, tension: STIFFNESS[shot.ease] };
+    },
+    { cx: opening.x, cy: opening.y },
+  );
   return simplifyCurve(raw);
 }
 

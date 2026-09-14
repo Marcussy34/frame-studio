@@ -1,8 +1,9 @@
 import { ArrowRotateLeft, Colorfilter, Maximize4, Mouse } from 'iconsax-reactjs';
 import { defaultSettings, ratios } from '../../shared/composition';
-import type { Settings } from '../../shared/types';
+import type { MediaAsset, Settings } from '../../shared/types';
 import { Button } from '@/components/ui/button';
 import { BackgroundPanel } from '@/components/BackgroundPanel';
+import { CameraPlan } from '@/components/CameraPlan';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
@@ -68,14 +69,17 @@ export function Inspector({
   onBackgroundBusyChange,
   // Cursor and zoom only exist for assets recorded in Frame Studio, so the whole
   // section is hidden rather than shown disabled for imported video.
-  hasCursorTrack = false,
+  asset,
+  onPlanned,
 }: {
   settings: Settings;
   onChange: (settings: Settings) => void;
   disabled: boolean;
   onBackgroundBusyChange: (busy: boolean) => void;
-  hasCursorTrack?: boolean;
+  asset?: MediaAsset;
+  onPlanned?: () => void;
 }) {
+  const hasCursorTrack = !!asset?.cursorTrack;
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     onChange({ ...settings, [key]: value });
   return (
@@ -243,6 +247,15 @@ export function Inspector({
                   value={settings.zoomSpeed}
                   onChange={(value) => set('zoomSpeed', value)}
                 />
+                {asset && onPlanned && (
+                  <CameraPlan
+                    asset={asset}
+                    settings={settings}
+                    onChange={onChange}
+                    onPlanned={onPlanned}
+                    disabled={disabled}
+                  />
+                )}
               </>
             )}
           </section>

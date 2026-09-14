@@ -11,6 +11,13 @@ export const BUNDLE_META = 'meta.json';
 // harming the bundle, because the raw track is what everything else derives from.
 export const BUNDLE_PLAN = 'zoom-plan.json';
 
+// Bundle ids arrive from the client, so never let one traverse out of the recordings
+// root. One implementation on purpose: this guard had grown two slightly different
+// copies, and two copies of a path check is how they drift apart.
+export function isBundleId(id: string): boolean {
+  return id.trim().length > 0 && !/[\\/]|\.\./.test(id);
+}
+
 export function bundlePaths(dir: string) {
   return {
     video: join(dir, BUNDLE_VIDEO),

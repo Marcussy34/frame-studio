@@ -325,3 +325,43 @@ describe('zoomCurveFor', () => {
     );
   });
 });
+
+describe('compileZoomPlan opening frame', () => {
+  it('starts pointed at the first shot rather than at the corner', () => {
+    // The centre is invisible at zoom 1, so starting at the default origin costs
+    // nothing to see, but makes the frame race diagonally across the picture while the
+    // first shot's zoom is already rising.
+    const track = {
+      meta: {
+        version: 1 as const,
+        captureKind: 'display' as const,
+        captureTitle: '',
+        captureFrames: [],
+        displayScale: 2,
+        displayPoints: { w: 960, h: 540 },
+        videoStartOffset: 0,
+        duration: 10,
+        createdAt: '2026-09-14T00:00:00.000Z',
+      },
+      events: [{ t: 1, x: 200, y: 150, e: 'd' as const, b: 0 }],
+    };
+    const plan: ZoomPlan = {
+      version: 1,
+      source: 'model',
+      model: 'test',
+      createdAt: '2026-09-14T00:00:00.000Z',
+      shots: [{ start: 4, end: 8, zoom: 2.4, focus: { x: 0.8, y: 0.8 }, ease: 'snap', why: '' }],
+    };
+    const curve = zoomCurveFor(
+      track,
+      { enabled: true, strength: 2.5, speed: 55 },
+      true,
+      10,
+      { width: 1920, height: 1080 },
+      plan,
+    );
+    // 0.8 of 1920 is 1536, and 0.8 of 1080 is 864.
+    expect(curve[0].cx).toBeCloseTo(1536, 0);
+    expect(curve[0].cy).toBeCloseTo(864, 0);
+  });
+});

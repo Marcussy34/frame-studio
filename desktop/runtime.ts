@@ -7,6 +7,7 @@ import express from 'express';
 import { createPreferencesStore } from './preferences';
 import { settingsSchema } from '../shared/composition';
 import type { RecordingService } from '../shared/recording';
+import type { ZoomPlanService } from '../server/zoom-plan-service';
 
 export async function startDesktopRuntime({
   rendererPath,
@@ -14,6 +15,7 @@ export async function startDesktopRuntime({
   sessionRoot = tmpdir(),
   recording,
   recordingsRoot,
+  planner,
 }: {
   rendererPath: string;
   preferencesPath: string;
@@ -22,6 +24,8 @@ export async function startDesktopRuntime({
   // rather than reached through IPC. Absent when the helper could not be bundled.
   recording?: RecordingService;
   recordingsRoot?: string;
+  // Absent when Antigravity is not installed, in which case the UI never offers it.
+  planner?: ZoomPlanService;
 }) {
   await readFile(join(rendererPath, 'index.html'));
   const preferences = await createPreferencesStore(preferencesPath);
@@ -30,7 +34,7 @@ export async function startDesktopRuntime({
   let studio: Awaited<ReturnType<(typeof import('../server/app'))['createApp']>>;
   try {
     const { createApp } = await import('../server/app');
-    studio = await createApp({ directory, preferences, recording, recordingsRoot });
+    studio = await createApp({ directory, preferences, recording, recordingsRoot, planner });
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
     throw error;

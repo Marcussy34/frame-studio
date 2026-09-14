@@ -239,6 +239,11 @@ export function useStudio() {
     recording,
     startedRecording: () => setRecording(true),
     openRecording,
+    // Reloads the current recording so a freshly written plan reaches the preview
+    // through the same path opening one does, rather than a second way in.
+    reloadRecording: () => {
+      if (asset?.cursorTrack) void openRecording(asset.name);
+    },
     clearFinishedJob: () => {
       if (job?.status !== 'processing') setJob(null);
     },

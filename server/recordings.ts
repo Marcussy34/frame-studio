@@ -1,6 +1,6 @@
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { bundlePaths, parseRecordingMeta } from '../shared/recording';
+import { bundlePaths, isBundleId, parseRecordingMeta } from '../shared/recording';
 
 export interface RecordingSummary {
   id: string;
@@ -45,9 +45,6 @@ export async function listRecordings(root: string): Promise<RecordingSummary[]> 
 }
 
 export async function deleteRecording(root: string, id: string): Promise<void> {
-  // Ids arrive from the client, so never let one traverse out of the root.
-  if (!id.trim() || id.includes('/') || id.includes('\\') || id.includes('..')) {
-    throw new Error('invalid recording id');
-  }
+  if (!isBundleId(id)) throw new Error('invalid recording id');
   await rm(join(root, id), { recursive: true, force: true });
 }

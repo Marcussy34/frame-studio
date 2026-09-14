@@ -36,7 +36,7 @@ export interface MediaAsset extends VideoMetadata {
 
 export interface Job {
   id: string;
-  kind: 'import' | 'export';
+  kind: 'import' | 'export' | 'plan';
   status: 'processing' | 'ready' | 'failed' | 'cancelled';
   progress: number;
   error?: string;

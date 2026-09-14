@@ -9,12 +9,14 @@ import { exportSchema, settingsSchema } from '../shared/composition';
 import {
   bundlePaths,
   captureRegionSchema,
+  isBundleId,
   parseCursorTrack,
   parseRecordingMeta,
   type RecordingService,
 } from '../shared/recording';
 import type { Job, MediaAsset, PreferencesStore } from '../shared/types';
 import { zoomPlanSchema } from '../shared/zoom-plan';
+import type { ZoomPlanService } from './zoom-plan-service';
 import { deleteRecording, listRecordings } from './recordings';
 import { preparePreview, probeVideo, renderVideo } from './media';
 
@@ -36,6 +38,7 @@ export async function createApp({
   preferences,
   recording,
   recordingsRoot,
+  planner,
 }: {
   directory: string;
   preferences?: PreferencesStore;
@@ -43,6 +46,9 @@ export async function createApp({
   // screen capture is not available at all.
   recording?: RecordingService;
   recordingsRoot?: string;
+  // Plans a recording's camera. Absent when Antigravity is not installed, in which
+  // case the UI never offers the button.
+  planner?: ZoomPlanService;
 }) {
   const app = express();
   app.disable('x-powered-by');
@@ -259,7 +265,7 @@ export async function createApp({
     }
     // Express 5 types route params as string | string[], so narrow it explicitly.
     const bundleId = String(req.params.id);
-    if (!bundleId.trim() || /[\\/]|\.\./.test(bundleId)) {
+    if (!isBundleId(bundleId)) {
       res.status(400).json({ error: 'That recording could not be opened.' });
       return;
     }
@@ -502,6 +508,77 @@ export async function createApp({
     const service = requireRecording(res);
     if (!service) return;
     res.json(service.status());
+  });
+
+  // Lets the UI hide the planning controls entirely rather than offering a button that
+  // can only ever fail on a machine without the Antigravity CLI.
+  app.get('/api/zoom-plan/available', (_req, res) => {
+    res.json({ available: !!planner && !!recordingsRoot });
+  });
+
+  // Planning is slow enough to need a job, so it follows the export pattern: start it,
+  // then poll /api/jobs/:id. The result is written into the bundle rather than returned,
+  // because a plan outlives the request that made it.
+  app.post('/api/recordings/:id/zoom-plan', idle, async (req, res) => {
+    if (!recordingsRoot || !planner) {
+      res.status(404).json({ error: 'Planning is not available in this build.' });
+      return;
+    }
+    const bundleId = String(req.params.id);
+    if (!isBundleId(bundleId)) {
+      res.status(400).json({ error: 'That recording could not be planned.' });
+      return;
+    }
+    const useFrames = (req.body as { useFrames?: unknown } | undefined)?.useFrames !== false;
+    const record = newJob('plan');
+    run(record, async () => {
+      const outcome = await planner.plan({
+        directory: join(recordingsRoot, bundleId),
+        useFrames,
+        signal: record.controller.signal,
+        progress: (value: number) => {
+          record.job.progress = value;
+        },
+      });
+      // A note means the model could not be used and the mechanical plan was kept. The
+      // job still succeeded, because a usable plan was still produced.
+      if (outcome.note) record.job.error = outcome.note;
+    });
+    res.status(202).json(record.job);
+  });
+
+  app.get('/api/recordings/:id/zoom-plan', async (req, res) => {
+    if (!recordingsRoot) {
+      res.status(404).json({ error: 'Recording is not available in this build.' });
+      return;
+    }
+    const bundleId = String(req.params.id);
+    if (!isBundleId(bundleId)) {
+      res.status(400).json({ error: 'That recording could not be read.' });
+      return;
+    }
+    try {
+      const raw = await readFile(bundlePaths(join(recordingsRoot, bundleId)).plan, 'utf8');
+      res.json(zoomPlanSchema.parse(JSON.parse(raw)));
+    } catch {
+      res.status(404).json({ error: 'That recording has no plan.' });
+    }
+  });
+
+  app.delete('/api/recordings/:id/zoom-plan', async (req, res) => {
+    if (!recordingsRoot) {
+      res.status(404).json({ error: 'Recording is not available in this build.' });
+      return;
+    }
+    const bundleId = String(req.params.id);
+    if (!isBundleId(bundleId)) {
+      res.status(400).json({ error: 'That recording could not be read.' });
+      return;
+    }
+    // Removing a plan reverts to the automatic zoom. The raw track is untouched, so
+    // nothing is actually lost.
+    await rm(bundlePaths(join(recordingsRoot, bundleId)).plan, { force: true });
+    res.json({ removed: true });
   });
 
   app.get('/api/recordings', async (_req, res) => {

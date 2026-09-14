@@ -211,7 +211,8 @@ export default function App() {
           onChange={studio.setSettings}
           disabled={blocked}
           onBackgroundBusyChange={setBackgroundLoading}
-          hasCursorTrack={!!studio.asset?.cursorTrack}
+          asset={studio.asset ?? undefined}
+          onPlanned={studio.reloadRecording}
         />
       </main>
       <footer className="flex h-9 shrink-0 items-center justify-between gap-3 border-t border-border bg-card/30 px-5 text-[10px] text-muted-foreground">
