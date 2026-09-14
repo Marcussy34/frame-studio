@@ -1,10 +1,11 @@
-import { ArrowRotateLeft, Colorfilter, Maximize4 } from 'iconsax-reactjs';
+import { ArrowRotateLeft, Colorfilter, Maximize4, Mouse } from 'iconsax-reactjs';
 import { defaultSettings, ratios } from '../../shared/composition';
 import type { Settings } from '../../shared/types';
 import { Button } from '@/components/ui/button';
 import { BackgroundPanel } from '@/components/BackgroundPanel';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 
 function SettingSlider({
@@ -43,16 +44,37 @@ function SettingSlider({
   );
 }
 
+function SettingSwitch({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <Label className="font-normal text-foreground/85">{label}</Label>
+      <Switch aria-label={label} checked={checked} onCheckedChange={onChange} />
+    </div>
+  );
+}
+
 export function Inspector({
   settings,
   onChange,
   disabled,
   onBackgroundBusyChange,
+  // Cursor and zoom only exist for assets recorded in Frame Studio, so the whole
+  // section is hidden rather than shown disabled for imported video.
+  hasCursorTrack = false,
 }: {
   settings: Settings;
   onChange: (settings: Settings) => void;
   disabled: boolean;
   onBackgroundBusyChange: (busy: boolean) => void;
+  hasCursorTrack?: boolean;
 }) {
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     onChange({ ...settings, [key]: value });
@@ -164,6 +186,67 @@ export function Inspector({
             onChange={(value) => set('y', value)}
           />
         </section>
+        {hasCursorTrack && (
+          <section className="space-y-5 border-t border-border p-6">
+            <div className="flex items-center gap-2.5 text-xs font-medium">
+              <Mouse className="size-4 text-primary" /> Cursor & zoom
+            </div>
+            <SettingSwitch
+              label="Enhanced cursor"
+              checked={settings.cursorEnabled}
+              onChange={(value) => set('cursorEnabled', value)}
+            />
+            {settings.cursorEnabled && (
+              <>
+                <SettingSlider
+                  label="Cursor size"
+                  value={Math.round(settings.cursorSize * 10)}
+                  min={10}
+                  max={40}
+                  suffix=""
+                  onChange={(value) => set('cursorSize', value / 10)}
+                />
+                <SettingSlider
+                  label="Smoothing"
+                  value={settings.cursorSmoothing}
+                  onChange={(value) => set('cursorSmoothing', value)}
+                />
+                <SettingSlider
+                  label="Motion blur"
+                  value={settings.cursorBlur}
+                  onChange={(value) => set('cursorBlur', value)}
+                />
+                <SettingSwitch
+                  label="Click effects"
+                  checked={settings.cursorClicks}
+                  onChange={(value) => set('cursorClicks', value)}
+                />
+              </>
+            )}
+            <SettingSwitch
+              label="Auto zoom"
+              checked={settings.zoomEnabled}
+              onChange={(value) => set('zoomEnabled', value)}
+            />
+            {settings.zoomEnabled && (
+              <>
+                <SettingSlider
+                  label="Zoom strength"
+                  value={Math.round(settings.zoomStrength * 10)}
+                  min={10}
+                  max={30}
+                  suffix=""
+                  onChange={(value) => set('zoomStrength', value / 10)}
+                />
+                <SettingSlider
+                  label="Zoom speed"
+                  value={settings.zoomSpeed}
+                  onChange={(value) => set('zoomSpeed', value)}
+                />
+              </>
+            )}
+          </section>
+        )}
       </fieldset>
     </aside>
   );

@@ -3,6 +3,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import sharp from 'sharp';
 import { backgroundSvg, getLayout, maskSvg } from '../shared/composition';
+import {
+  ARROW_UNIT_HEIGHT,
+  buildSprite,
+  buildZoomCurve,
+  renderCursorFrame,
+  RIPPLE_LIFE,
+  smoothPath,
+  sourceToCanvas,
+  subsampleCount,
+  visibleRegion,
+  zoomAt,
+  zoomExpressions,
+} from '../shared/cursor';
+import type { CursorTrack } from '../shared/recording';
 import type { ExportOptions, VideoMetadata } from '../shared/types';
 
 type Progress = (progress: number) => void;
@@ -14,10 +28,23 @@ export function runProcess(
   args: string[],
   signal?: AbortSignal,
   onOutput?: (chunk: string) => void,
+  // Supplies an extra input on stdin, used to feed the generated cursor layer so the
+  // export stays a single pass with no intermediate video file.
+  feedStdin?: (stream: NodeJS.WritableStream) => Promise<void>,
 ): Promise<string> {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      stdio: [feedStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    });
+    if (feedStdin && child.stdin) {
+      const stdin = child.stdin;
+      // A broken pipe is normal when ffmpeg stops early, so it must not reject.
+      stdin.on('error', () => {});
+      void feedStdin(stdin)
+        .catch(() => {})
+        .finally(() => stdin.end());
+    }
     let stdout = '';
     let stderr = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -27,12 +54,12 @@ export function runProcess(
       timer.unref();
     };
     signal?.addEventListener('abort', cancel, { once: true });
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       stdout = (stdout + text).slice(-2_000_000);
       onOutput?.(text);
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-5000);
     });
     child.on('error', reject);
@@ -200,6 +227,71 @@ export async function preparePreview(
   progress(1);
 }
 
+// Streams the cursor overlay to ffmpeg as raw RGBA, one frame at a time. The layer is
+// mostly transparent, so only the rectangle the cursor touched is ever written.
+async function writeCursorLayer(
+  stream: NodeJS.WritableStream,
+  options: {
+    track: CursorTrack;
+    settings: ExportOptions['settings'];
+    layout: ReturnType<typeof getLayout>;
+    duration: number;
+    fps: number;
+    sourceWidth: number;
+    sourceHeight: number;
+    signal: AbortSignal;
+  },
+): Promise<void> {
+  const { track, settings, layout, duration, fps, sourceWidth, sourceHeight, signal } = options;
+  const frames = Math.max(1, Math.round(duration * fps));
+  const scale = track.meta.displayScale;
+  // The true on-screen cursor, expressed in canvas pixels, then enlarged by the setting.
+  const baseHeight = ARROW_UNIT_HEIGHT * scale * (layout.video.width / sourceWidth);
+  const sprite = buildSprite(baseHeight * settings.cursorSize);
+  const path = smoothPath(track.events, { smoothing: settings.cursorSmoothing }, duration);
+  const curve = buildZoomCurve(
+    track.events,
+    { enabled: settings.zoomEnabled, strength: settings.zoomStrength, speed: settings.zoomSpeed },
+    duration,
+    scale,
+  );
+  const samplesPerFrame = subsampleCount(settings.cursorBlur);
+  const clicks = settings.cursorClicks ? track.events.filter((event) => event.e === 'd') : [];
+  const frame = new Uint8ClampedArray(layout.width * layout.height * 4);
+  const offset = track.meta.videoStartOffset;
+
+  for (let index = 0; index < frames; index++) {
+    signal.throwIfAborted();
+    frame.fill(0);
+    const positions = [];
+    for (let sub = 0; sub < samplesPerFrame; sub++) {
+      const t = (index + (sub + 0.5) / samplesPerFrame) / fps + offset;
+      const region = visibleRegion(zoomAt(curve, t), sourceWidth, sourceHeight);
+      positions.push(sourceToCanvas(path.at(t), region, layout.video, scale));
+    }
+    const midpoint = (index + 0.5) / fps + offset;
+    const region = visibleRegion(zoomAt(curve, midpoint), sourceWidth, sourceHeight);
+    const ripples = clicks
+      .filter((click) => midpoint - click.t >= 0 && midpoint - click.t <= RIPPLE_LIFE)
+      .map((click) => {
+        const point = sourceToCanvas(click, region, layout.video, scale);
+        return { x: point.x, y: point.y, age: midpoint - click.t };
+      });
+    renderCursorFrame({
+      out: frame,
+      width: layout.width,
+      height: layout.height,
+      sprite,
+      samples: positions,
+      ripples,
+      cursorHeight: baseHeight * settings.cursorSize,
+    });
+    if (!stream.write(Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength))) {
+      await new Promise((resolve) => stream.once('drain', resolve));
+    }
+  }
+}
+
 export async function renderVideo(
   source: string,
   output: string,
@@ -207,6 +299,8 @@ export async function renderVideo(
   options: ExportOptions,
   signal: AbortSignal,
   progress: Progress,
+  // Present only for assets that came from a Frame Studio recording.
+  track?: CursorTrack,
 ): Promise<void> {
   signal.throwIfAborted();
   const layout = getLayout(options.settings, meta, options.resolution);
@@ -226,11 +320,48 @@ export async function renderVideo(
     ]);
     signal.throwIfAborted();
     const video = layout.video;
-    const filters = `[0:v:0]scale=${video.width}:${video.height}:flags=lanczos,setsar=1,format=rgba,${videoTimeline(meta)}[video];[video][2:v]alphamerge=shortest=1[rounded];[1:v][rounded]overlay=${video.x}:${video.y}:shortest=1:format=auto,format=yuv420p[out]`;
+    const cursor = track && (options.settings.cursorEnabled || options.settings.zoomEnabled);
+    // zoompan crops from the input scaled by `zoom`, so running it at source resolution
+    // and scaling down afterwards keeps full detail at every zoom level.
+    const zoom =
+      track && options.settings.zoomEnabled
+        ? (() => {
+            const curve = buildZoomCurve(
+              track.events,
+              {
+                enabled: true,
+                strength: options.settings.zoomStrength,
+                speed: options.settings.zoomSpeed,
+              },
+              meta.duration,
+              track.meta.displayScale,
+            );
+            const expressions = zoomExpressions(curve, meta.width, meta.height, meta.fps);
+            return `zoompan=z='${expressions.z}':x='${expressions.x}':y='${expressions.y}':d=1:s=${meta.width}x${meta.height}:fps=${meta.fps},`;
+          })()
+        : '';
+    const base = `[0:v:0]${zoom}scale=${video.width}:${video.height}:flags=lanczos,setsar=1,format=rgba,${videoTimeline(meta)}[video];[video][2:v]alphamerge=shortest=1[rounded];[1:v][rounded]overlay=${video.x}:${video.y}:shortest=1:format=auto`;
+    const filters = cursor
+      ? `${base}[base];[base][3:v]overlay=0:0:shortest=1:format=auto,format=yuv420p[out]`
+      : `${base},format=yuv420p[out]`;
     const audio =
       options.includeAudio && meta.hasAudio
         ? ['-map', '0:a:0', '-af', audioTimeline(meta), '-c:a', 'aac', '-b:a', '192k']
         : ['-an'];
+    const cursorInput = cursor
+      ? [
+          '-f',
+          'rawvideo',
+          '-pix_fmt',
+          'rgba',
+          '-s',
+          `${layout.width}x${layout.height}`,
+          '-framerate',
+          String(meta.fps),
+          '-i',
+          'pipe:0',
+        ]
+      : [];
     await runProcess(
       ffmpeg,
       [
@@ -249,6 +380,7 @@ export async function renderVideo(
         String(meta.fps),
         '-i',
         mask,
+        ...cursorInput,
         '-filter_complex_threads',
         '2',
         '-filter_complex',
@@ -261,6 +393,19 @@ export async function renderVideo(
       ],
       signal,
       reportProgress(meta.duration, progress),
+      cursor && track
+        ? (stream) =>
+            writeCursorLayer(stream, {
+              track,
+              settings: options.settings,
+              layout,
+              duration: meta.duration,
+              fps: meta.fps,
+              sourceWidth: meta.width,
+              sourceHeight: meta.height,
+              signal,
+            })
+        : undefined,
     );
     progress(1);
   } catch (error) {

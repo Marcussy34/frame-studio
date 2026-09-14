@@ -91,6 +91,16 @@ export const settingsSchema = z.object({
   scale: z.number().finite().min(50).max(100),
   x: z.number().finite().min(0).max(100),
   y: z.number().finite().min(0).max(100),
+  // Cursor and zoom apply only to assets that carry a capture track. Defaults keep
+  // older saved canvases loading unchanged.
+  cursorEnabled: z.boolean().default(true),
+  cursorSize: z.number().finite().min(1).max(4).default(2.4),
+  cursorSmoothing: z.number().finite().min(0).max(100).default(65),
+  cursorBlur: z.number().finite().min(0).max(100).default(70),
+  cursorClicks: z.boolean().default(true),
+  zoomEnabled: z.boolean().default(true),
+  zoomStrength: z.number().finite().min(1).max(3).default(1.8),
+  zoomSpeed: z.number().finite().min(0).max(100).default(55),
 });
 
 export const exportSchema = z.object({
@@ -114,6 +124,14 @@ export const defaultSettings: Settings = {
   scale: 100,
   x: 50,
   y: 50,
+  cursorEnabled: true,
+  cursorSize: 2.4,
+  cursorSmoothing: 65,
+  cursorBlur: 70,
+  cursorClicks: true,
+  zoomEnabled: true,
+  zoomStrength: 1.8,
+  zoomSpeed: 55,
 };
 
 export interface Layout {

@@ -363,6 +363,8 @@ export async function createApp({
         (value) => {
           record.job.progress = value;
         },
+        // Only recordings carry a cursor track; imported video renders as before.
+        source.asset.cursorTrack,
       );
       record.job.downloadUrl = `/api/download/${record.job.id}`;
       record.job.filename = `${stem}-framed.mp4`;

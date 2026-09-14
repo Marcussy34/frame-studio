@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
 import { formatTime } from '@/lib/api';
+import { useCursorLayer } from '@/hooks/useCursorLayer';
 
 interface Props {
   asset: MediaAsset | null;
@@ -38,6 +39,7 @@ export function VideoPreview({
 }: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const cursorCanvas = useRef<HTMLCanvasElement>(null);
   const [box, setBox] = useState({ width: 640, height: 400 });
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -56,6 +58,15 @@ export function VideoPreview({
   const canPlay = !!asset && ready && !busy;
   const importing = uploading || (job?.kind === 'import' && job.status === 'processing');
   const frameHeight = layout.video.height * scale;
+  // Live cursor and zoom, driven by the same module the export uses.
+  const cursorLayer = useCursorLayer({
+    asset,
+    settings,
+    layout,
+    scale,
+    video,
+    canvas: cursorCanvas,
+  });
 
   useEffect(() => {
     const element = stage.current;
@@ -139,7 +150,7 @@ export function VideoPreview({
                 <video
                   ref={video}
                   src={asset.previewUrl}
-                  className="size-full object-fill"
+                  className="size-full object-fill will-change-transform"
                   preload="auto"
                   playsInline
                   muted={muted}
@@ -195,6 +206,17 @@ export function VideoPreview({
                 </div>
               )}
             </div>
+            {/* The cursor rides above the whole composition, not just the video, so a
+                cursor near the edge is never clipped by the rounded corners. */}
+            {cursorLayer.hasTrack && (
+              <canvas
+                ref={cursorCanvas}
+                width={cursorLayer.width}
+                height={cursorLayer.height}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 size-full"
+              />
+            )}
           </div>
         </div>
         {importing && (
