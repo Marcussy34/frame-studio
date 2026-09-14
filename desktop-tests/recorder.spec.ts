@@ -23,12 +23,13 @@ test('the record button opens a dialog listing the available displays', async ()
 
     await page.getByRole('button', { name: 'Record screen', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Record your screen' })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Display' })).toBeVisible();
-    // Start only enables once a display is selected, so this asserts the picker
-    // actually populated without depending on the select's internal markup.
-    await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled({
+    await expect(page.getByRole('radiogroup', { name: 'Display' })).toBeVisible();
+    // Every option is visible at once, and the chosen one is marked, so assert on the
+    // selection actually landing rather than on any internal markup.
+    await expect(page.getByRole('radio').first()).toHaveAttribute('aria-checked', 'true', {
       timeout: 30_000,
     });
+    await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled();
     expect(errors).toEqual([]);
   } finally {
     await application.close();
@@ -103,9 +104,11 @@ test('the picker can switch to recording a single window', async () => {
       'true',
     );
     // Frame Studio is itself an open window, so the list can never be empty here.
-    await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled({
+    await expect(page.getByRole('radiogroup', { name: 'Window' })).toBeVisible();
+    await expect(page.getByRole('radio').first()).toHaveAttribute('aria-checked', 'true', {
       timeout: 30_000,
     });
+    await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled();
     expect(errors).toEqual([]);
   } finally {
     await application.close();

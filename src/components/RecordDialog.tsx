@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Maximize4, Monitor, Record } from 'iconsax-reactjs';
+import { Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
 import type { DisplayInfo, WindowInfo } from '../../shared/recording';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -11,14 +11,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 import { RecordingsList } from '@/components/RecordingsList';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 interface Props {
   open: boolean;
@@ -62,6 +56,20 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
       })
       .catch((cause: Error) => setError(cause.message));
   }, [open, target]);
+
+  // Both kinds render through one list, which keeps the markup from forking.
+  const options =
+    target === 'display'
+      ? displays.map((display) => ({
+          id: display.id,
+          label: display.name,
+          detail: `${display.width} × ${display.height}`,
+        }))
+      : windows.map((item) => ({
+          id: item.id,
+          label: item.title || item.app,
+          detail: `${item.app} · ${item.width} × ${item.height}`,
+        }));
 
   const begin = useCallback(async () => {
     if (selected === null) return;
@@ -125,30 +133,48 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
               ))}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="record-display">{target === 'display' ? 'Display' : 'Window'}</Label>
-              <Select
-                value={selected === null ? undefined : String(selected)}
-                onValueChange={(value) => setSelected(Number(value))}
+              <Label>{target === 'display' ? 'Display' : 'Window'}</Label>
+              {/* A visible list rather than a dropdown: there are rarely many options, and
+                  hiding them behind a click made choosing one feel like nothing happened. */}
+              <div
+                role="radiogroup"
+                aria-label={target === 'display' ? 'Display' : 'Window'}
+                className="max-h-48 space-y-1 overflow-y-auto"
               >
-                <SelectTrigger id="record-display" aria-label="Display">
-                  <SelectValue
-                    placeholder={target === 'display' ? 'Choose a display' : 'Choose a window'}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {target === 'display'
-                    ? displays.map((display) => (
-                        <SelectItem key={display.id} value={String(display.id)}>
-                          {display.name} ({display.width} × {display.height})
-                        </SelectItem>
-                      ))
-                    : windows.map((item) => (
-                        <SelectItem key={item.id} value={String(item.id)}>
-                          {item.app} — {item.title}
-                        </SelectItem>
-                      ))}
-                </SelectContent>
-              </Select>
+                {options.length === 0 && (
+                  <p className="rounded-lg border border-border/70 bg-card/45 px-3 py-4 text-center text-xs text-muted-foreground">
+                    {error ? 'Nothing to show.' : 'Looking for something to record…'}
+                  </p>
+                )}
+                {options.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected === option.id}
+                    onClick={() => setSelected(option.id)}
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg border border-border/70 bg-card/45 px-3 py-2.5 text-left transition-colors hover:bg-card/80',
+                      selected === option.id && 'border-primary/70 bg-primary/8',
+                    )}
+                  >
+                    {target === 'display' ? (
+                      <Monitor className="size-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <Maximize4 className="size-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium">{option.label}</span>
+                      <span className="block truncate text-[10px] text-muted-foreground">
+                        {option.detail}
+                      </span>
+                    </span>
+                    {selected === option.id && (
+                      <TickCircle className="size-4 shrink-0 text-primary" variant="Bold" />
+                    )}
+                  </button>
+                ))}
+              </div>
               {target === 'window' && (
                 <p className="text-[10px] text-muted-foreground">
                   The cursor is hidden while it is outside the window. Moving the window is fine;
