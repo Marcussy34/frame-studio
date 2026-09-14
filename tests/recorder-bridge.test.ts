@@ -36,7 +36,7 @@ describe('createRecorder', () => {
     recorder.dispose();
   });
 
-  it('rejects start when the helper reports a permission requirement', async () => {
+  it('names the Screen Recording pane when that permission is missing', async () => {
     const binary = await fakeHelper(`
       process.stdin.on('data', () => {
         console.log(JSON.stringify({
@@ -46,8 +46,42 @@ describe('createRecorder', () => {
     `);
     const recorder = createRecorder(binary);
     await expect(recorder.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(
-      /screen-recording/,
+      /Screen Recording/,
     );
+    recorder.dispose();
+  });
+
+  it('names the Input Monitoring pane instead when that is the missing one', async () => {
+    // These live in different System Settings panes, and Input Monitoring is not
+    // guessable from the symptom, so the message has to say which.
+    const binary = await fakeHelper(`
+      process.stdin.on('data', () => {
+        console.log(JSON.stringify({
+          event: 'permission-required', permission: 'input-monitoring', needsRestart: true,
+        }));
+      });
+    `);
+    const recorder = createRecorder(binary);
+    await expect(recorder.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(
+      /Input Monitoring/,
+    );
+    recorder.dispose();
+  });
+
+  it('reports a recording that captured no cursor events', async () => {
+    const binary = await fakeHelper(`
+      let seen = 0;
+      process.stdin.on('data', () => {
+        seen += 1;
+        if (seen === 1) console.log(JSON.stringify({ event: 'started', tapInstalled: true }));
+        else console.log(JSON.stringify({
+          event: 'finished', frames: 100, samples: 0, clicks: 0, duration: 3, noCursorData: true,
+        }));
+      });
+    `);
+    const recorder = createRecorder(binary);
+    await recorder.start({ displayID: 1, outDir: '/tmp/x' });
+    expect((await recorder.stop()).noCursorData).toBe(true);
     recorder.dispose();
   });
 
