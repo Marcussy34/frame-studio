@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import { exportSchema, settingsSchema } from '../shared/composition';
 import {
   bundlePaths,
+  captureRegionSchema,
   parseCursorTrack,
   parseRecordingMeta,
   type RecordingService,
@@ -413,18 +414,34 @@ export async function createApp({
     }
   });
 
+  // Opens the drag-to-select overlay. Returns null when the user cancels.
+  app.post('/api/recording/region', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json({ region: await service.selectRegion() });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/recording/start', async (req, res) => {
     const service = requireRecording(res);
     if (!service) return;
-    const body = req.body as { displayID?: unknown; windowID?: unknown } | undefined;
+    const body = req.body as
+      { displayID?: unknown; windowID?: unknown; region?: unknown } | undefined;
     const displayID = Number(body?.displayID);
     const windowID = Number(body?.windowID);
+    const parsedRegion = captureRegionSchema.safeParse(body?.region);
     // Exactly one target, so an ambiguous request is rejected rather than guessed at.
-    const target = Number.isFinite(windowID)
-      ? { windowID }
-      : Number.isFinite(displayID)
-        ? { displayID }
-        : null;
+    // A region narrows the display it was drawn on.
+    const target = parsedRegion.success
+      ? { displayID: parsedRegion.data.displayID, region: parsedRegion.data }
+      : Number.isFinite(windowID)
+        ? { windowID }
+        : Number.isFinite(displayID)
+          ? { displayID }
+          : null;
     if (!target) {
       res.status(400).json({ error: 'Choose a display or a window before recording.' });
       return;

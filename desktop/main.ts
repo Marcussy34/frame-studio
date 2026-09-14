@@ -9,6 +9,7 @@ import type { RecordingService } from '../shared/recording';
 import { createRecorder } from './recorder-bridge';
 import { createRecordingService } from './recording-service';
 import { hideStopWindow, showStopWindow } from './stop-window';
+import { selectRegion } from './region-select';
 
 const STOP_HOTKEY = 'CommandOrControl+Shift+/';
 let recorderProcess: ReturnType<typeof createRecorder> | undefined;
@@ -116,6 +117,16 @@ else {
         hideStop: () => hideStopWindow(),
         registerShortcut: (handler) => void globalShortcut.register(STOP_HOTKEY, handler),
         unregisterShortcut: () => globalShortcut.unregister(STOP_HOTKEY),
+        // Hidden while the overlay is up so the app is not covering the thing you
+        // are trying to draw a box around.
+        selectRegion: async () => {
+          window?.hide();
+          try {
+            return await selectRegion();
+          } finally {
+            window?.show();
+          }
+        },
       });
     }
 

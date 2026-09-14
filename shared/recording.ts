@@ -42,7 +42,7 @@ export type CaptureFrame = z.infer<typeof captureFrameSchema>;
 export const recordingMetaSchema = z.object({
   version: z.literal(1),
   // Defaults keep bundles recorded before window capture existing loading unchanged.
-  captureKind: z.enum(['display', 'window']).default('display'),
+  captureKind: z.enum(['display', 'window', 'region']).default('display'),
   captureTitle: z.string().default(''),
   // Only written when it changes, so a window that never moves costs one entry.
   captureFrames: z.array(captureFrameSchema).default([]),
@@ -78,6 +78,16 @@ export interface WindowInfo {
   height: number;
 }
 
+export const captureRegionSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  // A stray click must never start a zero sized recording.
+  width: z.number().finite().min(16),
+  height: z.number().finite().min(16),
+  displayID: z.number().finite(),
+});
+export type CaptureRegion = z.infer<typeof captureRegionSchema>;
+
 export interface RecordingOutcome {
   id: string;
   frames: number;
@@ -94,8 +104,14 @@ export interface RecordingOutcome {
 export interface RecordingService {
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
-  // Exactly one of displayID or windowID.
-  start(target: { displayID?: number; windowID?: number }): Promise<{ id: string }>;
+  // Opens the drag-to-select overlay. Resolves null when the user cancels.
+  selectRegion(): Promise<CaptureRegion | null>;
+  // Exactly one of displayID or windowID. A region narrows a display capture.
+  start(target: {
+    displayID?: number;
+    windowID?: number;
+    region?: CaptureRegion;
+  }): Promise<{ id: string }>;
   stop(): Promise<RecordingOutcome | null>;
   status(): { recording: boolean; last: RecordingOutcome | null };
 }

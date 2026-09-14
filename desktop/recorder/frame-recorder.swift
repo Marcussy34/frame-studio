@@ -293,7 +293,7 @@ final class RecordingSession {
 }
 
 func startRecording(
-    displayID: CGDirectDisplayID?, windowID: CGWindowID?, outDir: String
+    displayID: CGDirectDisplayID?, windowID: CGWindowID?, region: CGRect?, outDir: String
 ) async -> RecordingSession? {
     guard CGPreflightScreenCaptureAccess() else {
         _ = CGRequestScreenCaptureAccess()
@@ -316,6 +316,7 @@ func startRecording(
         var title = ""
         var window: SCWindow?
         var origin = CGRect.zero
+        var crop: CGRect?
         let filter: SCContentFilter
 
         if let windowID {
@@ -342,15 +343,26 @@ func startRecording(
                 return nil
             }
             scale = scaleFor(displayID: displayID)
-            pointsWidth = display.width
-            pointsHeight = display.height
             // A display capture starts at the screen origin, which is not always zero
             // on a multi display setup.
-            let screen = screenFor(displayID: displayID)
-            origin = screen?.frame ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
-            origin = CGRect(
-                x: origin.origin.x, y: origin.origin.y,
-                width: CGFloat(display.width), height: CGFloat(display.height))
+            let screenOrigin = screenFor(displayID: displayID)?.frame.origin ?? .zero
+            if let region {
+                // Recording a chosen area. sourceRect is in points relative to the
+                // display, so the global rect has to come back into display space.
+                kind = "region"
+                crop = CGRect(
+                    x: region.origin.x - screenOrigin.x, y: region.origin.y - screenOrigin.y,
+                    width: region.width, height: region.height)
+                pointsWidth = Int(region.width)
+                pointsHeight = Int(region.height)
+                origin = region
+            } else {
+                pointsWidth = display.width
+                pointsHeight = display.height
+                origin = CGRect(
+                    x: screenOrigin.x, y: screenOrigin.y,
+                    width: CGFloat(display.width), height: CGFloat(display.height))
+            }
             filter = SCContentFilter(display: display, excludingWindows: [])
         }
 
@@ -364,6 +376,8 @@ func startRecording(
         config.showsCursor = false
         config.width = Int(Double(pointsWidth) * scale)
         config.height = Int(Double(pointsHeight) * scale)
+        // Crops the stream to the chosen area rather than scaling the whole display down.
+        if let crop { config.sourceRect = crop }
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.capturesAudio = false
         config.queueDepth = 8
@@ -516,6 +530,13 @@ while running {
             }
             let displayID = command["display"] as? Int
             let windowID = command["window"] as? Int
+            var region: CGRect?
+            if let r = command["region"] as? [String: Any],
+                let x = r["x"] as? Double, let y = r["y"] as? Double,
+                let w = r["width"] as? Double, let h = r["height"] as? Double
+            {
+                region = CGRect(x: x, y: y, width: w, height: h)
+            }
             guard displayID != nil || windowID != nil else {
                 emitError("start needs display or window")
                 break
@@ -523,6 +544,7 @@ while running {
             session = await startRecording(
                 displayID: displayID.map { CGDirectDisplayID($0) },
                 windowID: windowID.map { CGWindowID($0) },
+                region: region,
                 outDir: outDir)
         case "stop":
             guard let active = session else {

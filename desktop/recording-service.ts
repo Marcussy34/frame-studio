@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
+  CaptureRegion,
   DisplayInfo,
   RecordingOutcome,
   RecordingService,
@@ -19,6 +20,7 @@ export interface RecordingServiceDeps {
   hideStop: () => void;
   registerShortcut: (handler: () => void) => void;
   unregisterShortcut: () => void;
+  selectRegion: () => Promise<CaptureRegion | null>;
 }
 
 // Bundle ids are timestamps, which sorts them naturally and avoids a counter that
@@ -56,7 +58,11 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       return deps.recorder.listWindows();
     },
 
-    async start(target: { displayID?: number; windowID?: number }) {
+    selectRegion(): Promise<CaptureRegion | null> {
+      return deps.selectRegion();
+    },
+
+    async start(target: { displayID?: number; windowID?: number; region?: CaptureRegion }) {
       const id = newBundleId();
       const outDir = join(deps.root, id);
       await mkdir(outDir, { recursive: true });

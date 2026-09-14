@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
-import type { DisplayInfo, WindowInfo } from '../../shared/recording';
+import { Crop, Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
+import type { CaptureRegion, DisplayInfo, WindowInfo } from '../../shared/recording';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,7 +23,7 @@ interface Props {
 
 const COUNTDOWN_SECONDS = 3;
 
-type Target = 'display' | 'window';
+type Target = 'display' | 'window' | 'region';
 
 export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }: Props) {
   const [target, setTarget] = useState<Target>('display');
@@ -31,6 +31,7 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [region, setRegion] = useState<CaptureRegion | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Windows are refetched every time the picker opens, since the list goes stale as
@@ -41,6 +42,7 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
       return;
     }
     setError(null);
+    if (target === 'region') return;
     const path = target === 'display' ? '/api/displays' : '/api/windows';
     api<{ displays?: DisplayInfo[]; windows?: WindowInfo[] }>(path)
       .then((body) => {
@@ -72,13 +74,17 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
         }));
 
   const begin = useCallback(async () => {
-    if (selected === null) return;
+    if (target === 'region' ? !region : selected === null) return;
     try {
       await api('/api/recording/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
-          target === 'display' ? { displayID: selected } : { windowID: selected },
+          target === 'region'
+            ? { region }
+            : target === 'display'
+              ? { displayID: selected }
+              : { windowID: selected },
         ),
       });
       onStarted();
@@ -86,7 +92,7 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
       setCountdown(null);
       setError((cause as Error).message);
     }
-  }, [selected, target, onStarted]);
+  }, [selected, target, region, onStarted]);
 
   // Counts down visibly before starting, because the window hides on start and the
   // user needs a moment to get the screen ready.
@@ -114,74 +120,112 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
 
         {countdown === null ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-secondary/40 p-1">
-              {(['display', 'window'] as const).map((option) => (
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-secondary/40 p-1">
+              {(
+                [
+                  ['display', 'Full screen', <Monitor key="d" />],
+                  ['window', 'Window', <Maximize4 key="w" />],
+                  ['region', 'Area', <Crop key="r" />],
+                ] as const
+              ).map(([option, label, icon]) => (
                 <Button
                   key={option}
                   size="sm"
                   variant={target === option ? 'secondary' : 'ghost'}
                   aria-pressed={target === option}
-                  className="h-8 text-xs capitalize"
+                  className="h-8 px-1 text-xs"
                   onClick={() => {
                     setSelected(null);
                     setTarget(option);
                   }}
                 >
-                  {option === 'display' ? <Monitor /> : <Maximize4 />}
-                  {option === 'display' ? 'Full screen' : 'Window'}
+                  {icon}
+                  {label}
                 </Button>
               ))}
             </div>
-            <div className="space-y-2">
-              <Label>{target === 'display' ? 'Display' : 'Window'}</Label>
-              {/* A visible list rather than a dropdown: there are rarely many options, and
+            {target === 'region' ? (
+              <div className="space-y-2">
+                <Label>Area</Label>
+                <Button
+                  variant="outline"
+                  className="h-auto w-full flex-col items-start gap-1 py-3 text-left"
+                  onClick={async () => {
+                    setError(null);
+                    try {
+                      const body = await api<{ region: CaptureRegion | null }>(
+                        '/api/recording/region',
+                        { method: 'POST' },
+                      );
+                      if (body.region) setRegion(body.region);
+                    } catch (cause) {
+                      setError((cause as Error).message);
+                    }
+                  }}
+                >
+                  <span className="flex items-center gap-2 text-xs font-medium">
+                    <Crop className="size-4" />
+                    {region ? 'Choose a different area' : 'Drag to choose an area'}
+                  </span>
+                  <span className="text-[10px] font-normal text-muted-foreground">
+                    {region
+                      ? `${region.width} × ${region.height} selected`
+                      : 'Draw a box anywhere on screen, like Command Shift 4'}
+                  </span>
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>{target === 'display' ? 'Display' : 'Window'}</Label>
+                {/* A visible list rather than a dropdown: there are rarely many options, and
                   hiding them behind a click made choosing one feel like nothing happened. */}
-              <div
-                role="radiogroup"
-                aria-label={target === 'display' ? 'Display' : 'Window'}
-                className="max-h-48 space-y-1 overflow-y-auto"
-              >
-                {options.length === 0 && (
-                  <p className="rounded-lg border border-border/70 bg-card/45 px-3 py-4 text-center text-xs text-muted-foreground">
-                    {error ? 'Nothing to show.' : 'Looking for something to record…'}
+                <div
+                  role="radiogroup"
+                  aria-label={target === 'display' ? 'Display' : 'Window'}
+                  className="max-h-48 space-y-1 overflow-y-auto"
+                >
+                  {options.length === 0 && (
+                    <p className="rounded-lg border border-border/70 bg-card/45 px-3 py-4 text-center text-xs text-muted-foreground">
+                      {error ? 'Nothing to show.' : 'Looking for something to record…'}
+                    </p>
+                  )}
+                  {options.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected === option.id}
+                      onClick={() => setSelected(option.id)}
+                      className={cn(
+                        'flex w-full items-center gap-2.5 rounded-lg border border-border/70 bg-card/45 px-3 py-2.5 text-left transition-colors hover:bg-card/80',
+                        selected === option.id && 'border-primary/70 bg-primary/8',
+                      )}
+                    >
+                      {target === 'display' ? (
+                        <Monitor className="size-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <Maximize4 className="size-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium">{option.label}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {option.detail}
+                        </span>
+                      </span>
+                      {selected === option.id && (
+                        <TickCircle className="size-4 shrink-0 text-primary" variant="Bold" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+                {target === 'window' && (
+                  <p className="text-[10px] text-muted-foreground">
+                    The cursor is hidden while it is outside the window. Moving the window is fine;
+                    resizing it mid recording is not supported yet.
                   </p>
                 )}
-                {options.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected === option.id}
-                    onClick={() => setSelected(option.id)}
-                    className={cn(
-                      'flex w-full items-center gap-2.5 rounded-lg border border-border/70 bg-card/45 px-3 py-2.5 text-left transition-colors hover:bg-card/80',
-                      selected === option.id && 'border-primary/70 bg-primary/8',
-                    )}
-                  >
-                    {target === 'display' ? (
-                      <Monitor className="size-4 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <Maximize4 className="size-4 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">{option.label}</span>
-                      <span className="block truncate text-[10px] text-muted-foreground">
-                        {option.detail}
-                      </span>
-                    </span>
-                    {selected === option.id && (
-                      <TickCircle className="size-4 shrink-0 text-primary" variant="Bold" />
-                    )}
-                  </button>
-                ))}
               </div>
-              {target === 'window' && (
-                <p className="text-[10px] text-muted-foreground">
-                  The cursor is hidden while it is outside the window. Moving the window is fine;
-                  resizing it mid recording is not supported yet.
-                </p>
-              )}
-            </div>
+            )}
           </div>
         ) : (
           <p className="py-8 text-center text-5xl font-semibold tabular-nums">{countdown}</p>
@@ -194,7 +238,7 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
             setError(null);
             setCountdown(COUNTDOWN_SECONDS);
           }}
-          disabled={selected === null || countdown !== null}
+          disabled={(target === 'region' ? !region : selected === null) || countdown !== null}
         >
           <Record /> Start recording
         </Button>

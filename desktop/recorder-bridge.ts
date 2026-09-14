@@ -15,7 +15,12 @@ export interface RecordingResult {
 export interface Recorder {
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
-  start(opts: { displayID?: number; windowID?: number; outDir: string }): Promise<void>;
+  start(opts: {
+    displayID?: number;
+    windowID?: number;
+    region?: { x: number; y: number; width: number; height: number };
+    outDir: string;
+  }): Promise<void>;
   stop(): Promise<RecordingResult>;
   dispose(): void;
 }
@@ -101,13 +106,12 @@ export function createRecorder(binaryPath: string): Recorder {
       const reply = await send({ cmd: 'list-windows' }, (event) => event.event === 'windows');
       return reply.windows as WindowInfo[];
     },
-    async start({ displayID, windowID, outDir }) {
-      await send(
+    async start({ displayID, windowID, region, outDir }) {
+      const command =
         windowID === undefined
-          ? { cmd: 'start', display: displayID, out: outDir }
-          : { cmd: 'start', window: windowID, out: outDir },
-        (event) => event.event === 'started',
-      );
+          ? { cmd: 'start', display: displayID, out: outDir, ...(region ? { region } : {}) }
+          : { cmd: 'start', window: windowID, out: outDir };
+      await send(command, (event) => event.event === 'started');
     },
     async stop() {
       // Finalising writes the track and meta, so allow longer than a normal command.

@@ -25,7 +25,7 @@ You can copy the resulting **Frame Studio.app** to `~/Applications`. Packaging w
 
 ## Use it
 
-1. Choose **Record screen**, pick **Full screen** or **Window**, choose the target, and a three second countdown starts. The window hides itself so it does not appear in its own recording. Stop with the floating button or `Command+Shift+/`, and the finished recording opens in the editor. Or drop a recording onto the editor, or choose **Import video**. `Command+O` also opens the picker.
+1. Choose **Record screen**, pick **Full screen**, **Window**, or **Area**, choose the target, and a three second countdown starts. **Area** dims the screen so you can drag a box around any portion of it, the same gesture as `Command+Shift+4`. Escape cancels. The window hides itself so it does not appear in its own recording. Stop with the floating button or `Command+Shift+/`, and the finished recording opens in the editor. Or drop a recording onto the editor, or choose **Import video**. `Command+O` also opens the picker.
 2. Choose from 24 gradients, customize three colors and direction, switch between linear/radial gradients, choose a solid color or pattern, or import a background image. Change aspect ratio, padding, corners, shadow, video size, and position.
 3. Play, pause, or seek through the actual video. `Space` toggles playback. Preview mute does not change exported audio.
 4. For recordings, the **Cursor & zoom** panel appears in the inspector. Tune cursor size, smoothing, motion blur, click effects, zoom strength, and zoom speed. Everything previews live as you drag, because the preview and the export share one renderer.
@@ -57,7 +57,8 @@ The editor restores active exports and the latest completed download for the cur
 - **Imported video cannot have these features.** The cursor in an imported file is already burned into the pixels, so there is nothing to redraw and no position data to smooth. The Cursor & zoom panel only appears for recordings made in Frame Studio.
 - Recording a single window captures only that window, with no desktop, dock, or menu bar behind it. Moving the window while recording is fine, since its position is tracked and the cursor follows it. **Resizing it mid recording is not supported yet.**
 - While recording a window, the cursor is **hidden whenever it leaves that window**. Clamping it to the edge would draw a pointer that was never there.
-- Region selection, audio capture, and webcam are not in this version.
+- Recording an area crops the capture to the box you drew, so the exported video is exactly that size rather than a scaled down screen. The cursor is hidden whenever it leaves the area, the same as for a window.
+- Audio capture and webcam are not in this version.
 
 Use **Frame Studio > Quit Frame Studio** or close the app window to quit. Shutdown stops video processing and deletes the temporary session. No external upload service, account, database, or API key is used.
 
