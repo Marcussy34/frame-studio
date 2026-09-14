@@ -24,6 +24,7 @@ export function useStudio() {
   const [connecting, setConnecting] = useState(true);
   const [desktopPreferences, setDesktopPreferences] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
   const request = useRef<AbortController | null>(null);
   const preferencesWrite = useRef(Promise.resolve());
   const busy = uploading || job?.status === 'processing';
@@ -108,6 +109,49 @@ export function useStudio() {
     };
   }, [jobId, processing]);
 
+  // The hotkey and the floating stop button finish a recording without the renderer
+  // asking, so while recording it polls until the helper reports it stopped.
+  useEffect(() => {
+    if (!recording) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await api<{
+          recording: boolean;
+          last: { id: string } | null;
+        }>('/api/recording/status');
+        if (cancelled) return;
+        if (status.recording) {
+          timer = setTimeout(() => void poll(), 500);
+          return;
+        }
+        setRecording(false);
+        if (status.last) await openRecording(status.last.id);
+      } catch (reason) {
+        if (cancelled) return;
+        setRecording(false);
+        setError(reason instanceof Error ? reason.message : 'The recording could not finish.');
+      }
+    };
+    timer = setTimeout(() => void poll(), 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // openRecording is stable for the lifetime of the hook.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording]);
+
+  async function openRecording(id: string) {
+    setError(null);
+    try {
+      setJob(await api<Job>(`/api/recordings/${encodeURIComponent(id)}/open`, { method: 'POST' }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'That recording could not be opened.');
+    }
+  }
+
   async function importVideo(file: File) {
     if (busy || request.current) return;
     if (file.size > 4 * 1024 ** 3) {
@@ -183,6 +227,9 @@ export function useStudio() {
     importVideo,
     exportVideo,
     cancel,
+    recording,
+    startedRecording: () => setRecording(true),
+    openRecording,
     clearFinishedJob: () => {
       if (job?.status !== 'processing') setJob(null);
     },

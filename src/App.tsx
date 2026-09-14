@@ -6,12 +6,14 @@ import {
   ShieldTick,
   VideoPlay,
   CloseCircle,
+  Record,
 } from 'iconsax-reactjs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Inspector } from '@/components/Inspector';
 import { VideoPreview } from '@/components/VideoPreview';
 import { ExportDialog } from '@/components/ExportDialog';
+import { RecordDialog } from '@/components/RecordDialog';
 import { useStudio } from '@/hooks/useStudio';
 import { formatSize, formatTime } from '@/lib/api';
 
@@ -19,6 +21,7 @@ export default function App() {
   const studio = useStudio();
   const input = useRef<HTMLInputElement>(null);
   const [exportOpen, setExportOpen] = useState<boolean | null>(null);
+  const [recordOpen, setRecordOpen] = useState(false);
   const [backgroundLoading, setBackgroundLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
@@ -105,6 +108,19 @@ export default function App() {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="outline"
+            className="h-9 px-3 text-xs"
+            onClick={() => {
+              studio.setError(null);
+              setRecordOpen(true);
+            }}
+            disabled={blocked || studio.recording}
+            aria-label="Record screen"
+          >
+            <Record />
+            <span className="hidden sm:inline">Record screen</span>
+          </Button>
           <Button
             variant="outline"
             className="h-9 px-3 text-xs"
@@ -218,6 +234,15 @@ export default function App() {
           </div>
         </div>
       )}
+      <RecordDialog
+        open={recordOpen}
+        onOpenChange={setRecordOpen}
+        onStarted={() => {
+          setRecordOpen(false);
+          studio.startedRecording();
+        }}
+        onOpenRecording={(id) => void studio.openRecording(id)}
+      />
       <ExportDialog
         open={showExport}
         onOpenChange={setExportOpen}
