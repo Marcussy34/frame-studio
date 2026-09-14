@@ -1,10 +1,17 @@
-import { app, BrowserWindow, dialog, Menu, nativeTheme, session } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeTheme, session } from 'electron';
 import type { MenuItemConstructorOptions } from 'electron';
 import { access } from 'node:fs/promises';
 import { constants, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { startDesktopRuntime } from './runtime';
 import { canvasStorageKey } from '../shared/composition';
+import type { RecordingService } from '../shared/recording';
+import { createRecorder } from './recorder-bridge';
+import { createRecordingService } from './recording-service';
+import { hideStopWindow, showStopWindow } from './stop-window';
+
+const STOP_HOTKEY = 'CommandOrControl+Shift+/';
+let recorderProcess: ReturnType<typeof createRecorder> | undefined;
 
 app.setName('Frame Studio');
 const profile = app.commandLine.getSwitchValue('user-data-dir');
@@ -65,6 +72,10 @@ else {
       } catch (error) {
         console.error('Desktop cleanup failed:', error);
       } finally {
+        // Release the stop hotkey and the helper process before the app goes away.
+        globalShortcut.unregisterAll();
+        hideStopWindow();
+        recorderProcess?.dispose();
         mayQuit = true;
         app.quit();
       }
@@ -81,10 +92,39 @@ else {
     await Promise.all([access(ffmpeg, constants.X_OK), access(ffprobe, constants.X_OK)]);
     process.env.FRAME_FFMPEG_PATH = ffmpeg;
     process.env.FRAME_FFPROBE_PATH = ffprobe;
+    // Recording is additive, so a missing helper disables it rather than stopping the
+    // app from importing and exporting as usual.
+    const recorder = join(media, 'frame-recorder');
+    try {
+      await access(recorder, constants.X_OK);
+      process.env.FRAME_RECORDER_PATH = recorder;
+    } catch {
+      console.warn('Screen recording is unavailable: the capture helper was not bundled.');
+    }
+    // Recording bundles live beside the canvas preferences so they survive restarts.
+    const recordingsRoot = join(app.getPath('userData'), 'recordings');
+    mkdirSync(recordingsRoot, { recursive: true });
+    let recording: RecordingService | undefined;
+    if (process.env.FRAME_RECORDER_PATH) {
+      recorderProcess = createRecorder(process.env.FRAME_RECORDER_PATH);
+      recording = createRecordingService({
+        recorder: recorderProcess,
+        root: recordingsRoot,
+        hideWindow: () => window?.hide(),
+        showWindow: () => window?.show(),
+        showStop: (onStop) => showStopWindow(onStop),
+        hideStop: () => hideStopWindow(),
+        registerShortcut: (handler) => void globalShortcut.register(STOP_HOTKEY, handler),
+        unregisterShortcut: () => globalShortcut.unregister(STOP_HOTKEY),
+      });
+    }
+
     const { startDesktopRuntime } = await import('./runtime');
     runtime = await startDesktopRuntime({
       rendererPath: join(app.getAppPath(), 'renderer'),
       preferencesPath: join(app.getPath('userData'), 'canvas.json'),
+      recording,
+      recordingsRoot,
     });
     if (quitRequested) return;
     const origin = runtime.origin;

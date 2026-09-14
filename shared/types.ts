@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { CursorTrack } from './recording';
 import type { exportSchema, settingsSchema } from './composition';
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -25,6 +26,9 @@ export interface MediaAsset extends VideoMetadata {
   name: string;
   size: number;
   previewUrl: string;
+  // Present only for assets opened from a Frame Studio recording. Imported video has
+  // no cursor data and never will, so consumers must handle its absence.
+  cursorTrack?: CursorTrack;
 }
 
 export interface Job {

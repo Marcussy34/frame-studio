@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import express from 'express';
-import type { ErrorRequestHandler, RequestHandler } from 'express';
+import type { ErrorRequestHandler, RequestHandler, Response } from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import { exportSchema, settingsSchema } from '../shared/composition';
+import {
+  bundlePaths,
+  parseCursorTrack,
+  parseRecordingMeta,
+  type RecordingService,
+} from '../shared/recording';
 import type { Job, MediaAsset, PreferencesStore } from '../shared/types';
+import { deleteRecording, listRecordings } from './recordings';
 import { preparePreview, probeVideo, renderVideo } from './media';
 
 interface JobRecord {
@@ -25,9 +32,15 @@ interface StoredAsset {
 export async function createApp({
   directory,
   preferences,
+  recording,
+  recordingsRoot,
 }: {
   directory: string;
   preferences?: PreferencesStore;
+  // Supplied by the desktop process. Absent in the browser-only dev server, where
+  // screen capture is not available at all.
+  recording?: RecordingService;
+  recordingsRoot?: string;
 }) {
   const app = express();
   app.disable('x-powered-by');
@@ -235,6 +248,76 @@ export async function createApp({
     res.status(202).json(record.job);
   });
 
+  // Opens a recording bundle produced by the capture helper. The bundle's video is
+  // copied into the session so clearing the session never touches a saved recording.
+  app.post('/api/recordings/:id/open', idle, async (req, res) => {
+    if (!recordingsRoot) {
+      res.status(503).json({ error: 'Recordings are only available in the desktop app.' });
+      return;
+    }
+    // Express 5 types route params as string | string[], so narrow it explicitly.
+    const bundleId = String(req.params.id);
+    if (!bundleId.trim() || /[\\/]|\.\./.test(bundleId)) {
+      res.status(400).json({ error: 'That recording could not be opened.' });
+      return;
+    }
+    const paths = bundlePaths(join(recordingsRoot, bundleId));
+    let meta;
+    let events;
+    let bytes;
+    try {
+      meta = parseRecordingMeta(JSON.parse(await readFile(paths.meta, 'utf8')));
+      events = parseCursorTrack(await readFile(paths.track, 'utf8'));
+      bytes = (await stat(paths.video)).size;
+    } catch {
+      res.status(404).json({ error: 'That recording could not be opened.' });
+      return;
+    }
+    if (active || closing) {
+      res.status(409).json({ error: 'Finish or cancel the current video job first.' });
+      return;
+    }
+    const record = newJob('import');
+    const assetId = randomUUID();
+    const source = join(directory, `${assetId}-source.mov`);
+    const preview = join(directory, `${assetId}-preview.mp4`);
+    run(record, async () => {
+      let committed = false;
+      try {
+        await copyFile(paths.video, source);
+        const probe = await probeVideo(source, record.controller.signal);
+        await preparePreview(source, preview, probe, record.controller.signal, (value) => {
+          record.job.progress = value;
+        });
+        record.controller.signal.throwIfAborted();
+        const asset: MediaAsset = {
+          ...probe,
+          id: assetId,
+          name: bundleId,
+          size: bytes,
+          previewUrl: `/api/media/${assetId}`,
+          cursorTrack: { meta, events },
+        };
+        const previous = current;
+        current = { asset, source, preview };
+        record.job.asset = asset;
+        committed = true;
+        if (previous)
+          await Promise.all(
+            [previous.source, previous.preview].map((path) =>
+              rm(path, { force: true }).catch(() => {}),
+            ),
+          );
+      } finally {
+        if (!committed)
+          await Promise.all(
+            [source, preview].map((path) => rm(path, { force: true }).catch(() => {})),
+          );
+      }
+    });
+    res.status(202).json(record.job);
+  });
+
   app.get('/api/jobs/:id', (req, res) => {
     const record = jobs.get(req.params.id);
     if (record) res.json(record.job);
@@ -298,6 +381,78 @@ export async function createApp({
     if (!record?.output || record.job.status !== 'ready')
       res.status(404).json({ error: 'Export a video before downloading.' });
     else res.download(record.output, record.job.filename ?? 'framed-video.mp4');
+  });
+
+  // Recording is desktop only. Without an injected service every route reports that
+  // plainly rather than failing in some other way.
+  const requireRecording = (res: Response): RecordingService | null => {
+    if (recording) return recording;
+    res.status(503).json({ error: 'Screen recording is only available in the desktop app.' });
+    return null;
+  };
+
+  app.get('/api/displays', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json({ displays: await service.listDisplays() });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post('/api/recording/start', async (req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    const displayID = Number((req.body as { displayID?: unknown } | undefined)?.displayID);
+    if (!Number.isFinite(displayID)) {
+      res.status(400).json({ error: 'Choose a display before recording.' });
+      return;
+    }
+    try {
+      res.json(await service.start(displayID));
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post('/api/recording/stop', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json({ outcome: await service.stop() });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // The hotkey and the floating stop button finish a recording without the renderer
+  // asking, so the renderer polls this to notice.
+  app.get('/api/recording/status', (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    res.json(service.status());
+  });
+
+  app.get('/api/recordings', async (_req, res) => {
+    if (!recordingsRoot) {
+      res.json({ recordings: [] });
+      return;
+    }
+    res.json({ recordings: await listRecordings(recordingsRoot) });
+  });
+
+  app.delete('/api/recordings/:id', async (req, res) => {
+    if (!recordingsRoot) {
+      res.status(503).json({ error: 'Recordings are only available in the desktop app.' });
+      return;
+    }
+    try {
+      await deleteRecording(recordingsRoot, String(req.params.id));
+      res.status(204).end();
+    } catch {
+      res.status(400).json({ error: 'That recording could not be deleted.' });
+    }
   });
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'This action is not available.' }));

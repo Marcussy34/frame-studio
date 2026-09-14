@@ -6,15 +6,22 @@ import { join } from 'node:path';
 import express from 'express';
 import { createPreferencesStore } from './preferences';
 import { settingsSchema } from '../shared/composition';
+import type { RecordingService } from '../shared/recording';
 
 export async function startDesktopRuntime({
   rendererPath,
   preferencesPath,
   sessionRoot = tmpdir(),
+  recording,
+  recordingsRoot,
 }: {
   rendererPath: string;
   preferencesPath: string;
   sessionRoot?: string;
+  // Screen capture lives in the main process, so it is injected into the local API
+  // rather than reached through IPC. Absent when the helper could not be bundled.
+  recording?: RecordingService;
+  recordingsRoot?: string;
 }) {
   await readFile(join(rendererPath, 'index.html'));
   const preferences = await createPreferencesStore(preferencesPath);
@@ -23,7 +30,7 @@ export async function startDesktopRuntime({
   let studio: Awaited<ReturnType<(typeof import('../server/app'))['createApp']>>;
   try {
     const { createApp } = await import('../server/app');
-    studio = await createApp({ directory, preferences });
+    studio = await createApp({ directory, preferences, recording, recordingsRoot });
   } catch (error) {
     await rm(directory, { recursive: true, force: true });
     throw error;
