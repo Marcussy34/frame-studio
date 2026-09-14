@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { defaultSettings, getLayout } from '../shared/composition';
+import { buildZoomCurve, zoomExpressions } from '../shared/cursor';
 import type { CursorEvent, CursorTrack } from '../shared/recording';
 import type { ExportOptions } from '../shared/types';
 import { probeVideo, renderVideo } from '../server/media';
@@ -102,6 +103,25 @@ async function patchBrightness(
   return total / raw.length;
 }
 
+// Clicks spread far enough apart that each gets its own zoom in and out, which is what
+// makes the curve long. A track of pure movement, as the other tests use, collapses to
+// a single flat keyframe and never exercises the zoom expression at all.
+function clickedTrack(clicks: number, duration: number): CursorTrack {
+  const events: CursorEvent[] = [];
+  for (let i = 0; i < clicks; i++) {
+    const t = 0.3 + (i / clicks) * (duration - 0.6);
+    const x = 300 + ((i * 137) % 400);
+    const y = 200 + ((i * 89) % 250);
+    for (let k = 0; k < 10; k++) {
+      events.push({ t: t - 0.2 + k * 0.02, x: x - 20 + k * 2, y, e: 'm', b: -1 });
+    }
+    events.push({ t, x, y, e: 'd', b: 0 });
+    events.push({ t: t + 0.08, x, y, e: 'u', b: 0 });
+  }
+  const base = centredTrack();
+  return { meta: { ...base.meta, duration }, events };
+}
+
 describe('cursor and zoom export', () => {
   it('draws the cursor into the exported video only when a track is supplied', async () => {
     const withCursor = await render(
@@ -153,4 +173,46 @@ describe('cursor and zoom export', () => {
     // Both renders exist and are well formed; the zoom path ran without error.
     expect(probe.duration).toBeGreaterThan(1);
   }, 180_000);
+
+  it('feeds ffmpeg a zoom expression it can still parse when the curve is long', async () => {
+    // Six spread out clicks over fifteen seconds produces about 150 curve points. Built
+    // as nested conditionals that used to exceed ffmpeg's recursive expression parser
+    // and fail the WHOLE export with an opaque "Cannot allocate memory", which is only
+    // about four clicks of headroom. The other zoom test never caught it because its
+    // source is two seconds with a single click.
+    //
+    // This drives the real parser rather than a whole render: parsing the filter is
+    // exactly what used to break, and it costs a second instead of a minute.
+    const track = clickedTrack(6, 15);
+    const curve = buildZoomCurve(
+      track.events,
+      { enabled: true, strength: 1.8, speed: 55 },
+      15,
+      track.meta.displayScale,
+      track.meta.captureFrames,
+    );
+    // Guards the guard: if simplifyCurve ever collapses this, the test stops proving
+    // anything and should be given a busier track rather than quietly passing.
+    expect(curve.length).toBeGreaterThan(100);
+
+    const expressions = zoomExpressions(curve, 1920, 1080, 30);
+    // Mirrors how server/media.ts assembles the filter.
+    const zoompan = `zoompan=z='${expressions.z}':x='${expressions.x}':y='${expressions.y}':d=1:s=1920x1080:fps=30`;
+    await execute('ffmpeg', [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=black:s=1920x1080:r=30:d=0.2',
+      '-vf',
+      zoompan,
+      '-frames:v',
+      '3',
+      '-f',
+      'null',
+      '-',
+    ]);
+  }, 60_000);
 });

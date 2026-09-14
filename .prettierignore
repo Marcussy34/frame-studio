@@ -1,6 +1,7 @@
 node_modules
 dist
 .codebase-memory
+.serena
 .firecrawl
 test-results
 playwright-report

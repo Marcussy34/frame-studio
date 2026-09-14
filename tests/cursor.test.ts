@@ -232,17 +232,88 @@ describe('renderCursorFrame', () => {
 });
 
 describe('piecewiseExpression', () => {
+  // ffmpeg's expression parser is recursive with a budget of about 100 levels. Anything
+  // deeper fails the whole export with "Cannot allocate memory", so depth is the real
+  // contract here, not length.
+  const FFMPEG_PARSE_BUDGET = 100;
+
+  function parseDepth(expression: string): number {
+    let depth = 0;
+    let deepest = 0;
+    for (const character of expression) {
+      if (character === '(') deepest = Math.max(deepest, ++depth);
+      else if (character === ')') depth--;
+    }
+    return deepest;
+  }
+
+  // Evaluates the generated expression the way ffmpeg would, so the tests check what
+  // the filter computes rather than how the string happens to be spelled. The input is
+  // this module's own output, never anything external, which is what makes building a
+  // function from it safe here.
+  function evaluate(expression: string, on: number): number {
+    const lt = (a: number, b: number) => (a < b ? 1 : 0);
+    const gte = (a: number, b: number) => (a >= b ? 1 : 0);
+    const iff = (condition: number, a: number, b: number) => (condition ? a : b);
+    const source = expression.replace(/\bif\(/g, 'iff(');
+    return new Function('on', 'lt', 'gte', 'iff', `return ${source};`)(on, lt, gte, iff);
+  }
+
+  // What a piecewise linear ramp through the points should produce at a given frame.
+  function expected(points: { f: number; v: number }[], on: number): number {
+    if (points.length === 1) return points[0].v;
+    for (let i = 0; i < points.length - 1; i++) {
+      if (on < points[i + 1].f) {
+        const a = points[i];
+        const b = points[i + 1];
+        return a.v + ((b.v - a.v) * (on - a.f)) / Math.max(1, b.f - a.f);
+      }
+    }
+    return points[points.length - 1].v;
+  }
+
   it('returns a constant for a single point', () => {
     expect(piecewiseExpression([{ f: 0, v: 1.5 }])).toBe('1.5000');
   });
 
-  it('builds a nested conditional over the frame index', () => {
-    const expression = piecewiseExpression([
+  it('ramps between two points and holds the last value afterwards', () => {
+    const points = [
       { f: 0, v: 1 },
       { f: 60, v: 2 },
-    ]);
-    expect(expression).toContain('lt(on,60)');
-    expect(expression).toContain('2.0000');
+    ];
+    const expression = piecewiseExpression(points);
+    for (const frame of [-5, 0, 30, 59, 60, 120]) {
+      expect(evaluate(expression, frame)).toBeCloseTo(expected(points, frame), 3);
+    }
+  });
+
+  it("stays within ffmpeg's parse budget for a curve with hundreds of points", () => {
+    // A 20 second recording with six spread out clicks already produces 158 points, so
+    // this is an ordinary recording rather than a pathological one.
+    const points = Array.from({ length: 500 }, (_, i) => ({ f: i * 3, v: 1 + (i % 7) * 0.2 }));
+    expect(parseDepth(piecewiseExpression(points))).toBeLessThan(FFMPEG_PARSE_BUDGET);
+  });
+
+  it('computes the same values as a plain piecewise ramp at every frame', () => {
+    const points = Array.from({ length: 120 }, (_, i) => ({ f: i * 5, v: 1 + Math.sin(i) * 0.4 }));
+    const expression = piecewiseExpression(points);
+    for (let frame = -10; frame <= 620; frame += 7) {
+      expect(evaluate(expression, frame)).toBeCloseTo(expected(points, frame), 3);
+    }
+  });
+
+  it('handles points that round onto the same frame, which a dense curve produces', () => {
+    // zoomExpressions rounds times to whole frames, so neighbouring keys collide.
+    const points = [
+      { f: 0, v: 1 },
+      { f: 10, v: 1.5 },
+      { f: 10, v: 1.7 },
+      { f: 20, v: 2 },
+    ];
+    const expression = piecewiseExpression(points);
+    for (const frame of [0, 5, 10, 15, 20, 30]) {
+      expect(evaluate(expression, frame)).toBeCloseTo(expected(points, frame), 3);
+    }
   });
 });
 

@@ -594,17 +594,44 @@ export function renderCursorFrame(frame: LayerFrame): void {
 
 // zoompan has no runtime command support, so the whole curve has to travel inside the
 // filter expression. Piecewise linear over the output frame index.
+// Summed as a BALANCED tree rather than folded left to right. ffmpeg's expression
+// parser is recursive with a budget of about 100 levels, and it spends one level per
+// nesting AND one per term of a `a+b+c` chain, so both the obvious shapes run out. A
+// balanced split costs log2(terms) instead, which is what lets the curve be as detailed
+// as it needs to be.
+function balancedSum(terms: string[]): string {
+  if (terms.length === 1) return terms[0];
+  const half = terms.length >> 1;
+  return `(${balancedSum(terms.slice(0, half))}+${balancedSum(terms.slice(half))})`;
+}
+
+// A piecewise linear ramp through the points, as an ffmpeg filter expression.
+//
+// This was once a chain of nested if(lt(...)) conditionals, one level per point, which
+// meant a curve of more than about 99 points failed the entire export with an opaque
+// "Cannot allocate memory" from the expression parser. That is only around four well
+// separated clicks: a twenty second recording with six of them already produced 158
+// points. Gating each segment and summing instead keeps the parse depth logarithmic.
 export function piecewiseExpression(points: { f: number; v: number }[], variable = 'on'): string {
   if (!points.length) return '0';
-  let expression = points[points.length - 1].v.toFixed(4);
-  for (let i = points.length - 2; i >= 0; i--) {
+  if (points.length === 1) return points[0].v.toFixed(4);
+
+  const terms: string[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
     const b = points[i + 1];
     const span = Math.max(1, b.f - a.f);
-    const segment = `(${a.v.toFixed(4)}+(${(b.v - a.v).toFixed(4)})*(${variable}-${a.f})/${span})`;
-    expression = `if(lt(${variable},${b.f}),${segment},${expression})`;
+    const ramp = `(${a.v.toFixed(4)}+(${(b.v - a.v).toFixed(4)})*(${variable}-${a.f})/${span})`;
+    // Exactly one gate is ever 1, so the terms sum to the segment the frame falls in.
+    // The first has no lower bound, so frames before the curve starts extrapolate
+    // backwards exactly as the nested form did.
+    const gate =
+      i === 0 ? `lt(${variable},${b.f})` : `gte(${variable},${a.f})*lt(${variable},${b.f})`;
+    terms.push(`${gate}*${ramp}`);
   }
-  return expression;
+  const last = points[points.length - 1];
+  terms.push(`gte(${variable},${last.f})*${last.v.toFixed(4)}`);
+  return balancedSum(terms);
 }
 
 export interface ZoomExpressions {

@@ -2,6 +2,7 @@ node_modules/
 dist/
 .firecrawl/
 .codebase-memory/
+.serena/
 test-results/
 playwright-report/
 .DS_Store
