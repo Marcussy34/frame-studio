@@ -103,7 +103,16 @@ export interface RecordingOutcome {
 // Implemented by the desktop process and injected into the local API, the same way
 // preferences already are. Absent in the browser-only dev server, where screen capture
 // is not available at all.
+export interface PermissionReport {
+  screenRecording: boolean;
+  inputMonitoring: boolean;
+  accessibility: boolean;
+}
+
 export interface RecordingService {
+  // What the capture helper can actually see. These grants are keyed to code identity,
+  // so a stale System Settings entry can read as enabled while the process is denied.
+  permissions(): Promise<PermissionReport>;
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
   // Opens the drag-to-select overlay. Resolves null when the user cancels.

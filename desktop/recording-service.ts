@@ -54,6 +54,10 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       return deps.recorder.listDisplays();
     },
 
+    permissions() {
+      return deps.recorder.permissions();
+    },
+
     listWindows(): Promise<WindowInfo[]> {
       return deps.recorder.listWindows();
     },

@@ -4,6 +4,7 @@ import { type ControllerDeps, createRecordingController } from '../desktop/recor
 function deps(overrides: Partial<ControllerDeps> = {}): ControllerDeps {
   return {
     recorder: {
+      permissions: vi.fn(),
       listDisplays: vi.fn(),
       listWindows: vi.fn(),
       start: vi.fn(async () => {}),
@@ -63,6 +64,7 @@ describe('createRecordingController', () => {
   it('restores the window when start fails, so a denied permission cannot strand the user', async () => {
     const injected = deps({
       recorder: {
+        permissions: vi.fn(),
         listDisplays: vi.fn(),
         listWindows: vi.fn(),
         start: vi.fn(async () => {

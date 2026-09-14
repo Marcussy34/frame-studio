@@ -404,6 +404,16 @@ export async function createApp({
     }
   });
 
+  app.get('/api/recording/permissions', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json(await service.permissions());
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.get('/api/windows', async (_req, res) => {
     const service = requireRecording(res);
     if (!service) return;

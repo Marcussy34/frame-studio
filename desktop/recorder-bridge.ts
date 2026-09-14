@@ -14,7 +14,14 @@ export interface RecordingResult {
   noCursorData?: boolean;
 }
 
+export interface PermissionReport {
+  screenRecording: boolean;
+  inputMonitoring: boolean;
+  accessibility: boolean;
+}
+
 export interface Recorder {
+  permissions(): Promise<PermissionReport>;
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
   start(opts: {
@@ -109,6 +116,14 @@ export function createRecorder(binaryPath: string): Recorder {
   }
 
   return {
+    async permissions() {
+      const reply = await send({ cmd: 'permissions' }, (event) => event.event === 'permissions');
+      return {
+        screenRecording: reply.screenRecording as boolean,
+        inputMonitoring: reply.inputMonitoring as boolean,
+        accessibility: reply.accessibility as boolean,
+      };
+    },
     async listDisplays() {
       const reply = await send({ cmd: 'list-displays' }, (event) => event.event === 'displays');
       return reply.displays as DisplayInfo[];

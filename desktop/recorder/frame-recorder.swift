@@ -536,6 +536,8 @@ while running {
             await listDisplays()
         case "list-windows":
             await listWindows()
+        case "permissions":
+            reportPermissions()
         case "start":
             guard session == nil else {
                 emitError("already recording")
@@ -600,6 +602,17 @@ while running {
 
 // Only windows a person could plausibly want to record: on screen, titled, and big
 // enough to be a real window rather than a shadow or a menu.
+// Diagnostic. Reports what this process can actually see, which matters because these
+// grants are keyed to code identity and a stale entry still shows as enabled.
+func reportPermissions() {
+    emit([
+        "event": "permissions",
+        "screenRecording": CGPreflightScreenCaptureAccess(),
+        "inputMonitoring": CGPreflightListenEventAccess(),
+        "accessibility": AXIsProcessTrusted(),
+    ])
+}
+
 func listWindows() async {
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(
