@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { build } from 'esbuild';
 import sharp from 'sharp';
 import { bundleMedia } from './bundle-media.mjs';
+import { buildRecorder } from './recorder/build.mjs';
 
 const execute = promisify(execFile);
 const root = resolve('.');
@@ -46,6 +47,9 @@ await build({
   legalComments: 'linked',
 });
 const media = await bundleMedia(join(stage, 'media'));
+// The capture helper ships beside ffmpeg so runtime resolution follows one rule, and
+// bundle-media's existing ad-hoc signing pattern covers it the same way.
+await buildRecorder(join(stage, 'media', 'MacOS'));
 await writeFile(join(stage, 'media.json'), JSON.stringify(media, null, 2) + '\n');
 const iconset = join(stage, 'FrameStudio.iconset');
 await mkdir(iconset, { recursive: true });
