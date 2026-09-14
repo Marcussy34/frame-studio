@@ -96,6 +96,20 @@ Two things make this less painful:
 removes every record for the app, after which the next launch prompts cleanly. Removing
 the entry in System Settings with the minus button does the same thing.
 
-**The permanent fix** is a real Developer ID certificate, which gives the app a stable
-identity across rebuilds. That is not configured here, so expect to re-grant after a
-reinstall.
+**This is now fixed.** `desktop/create-signing-identity.sh` creates a local self-signed
+code signing identity, and both the app and the capture helper are signed with it. The
+difference is visible in the designated requirement, which is what TCC actually matches
+against:
+
+```
+ad-hoc:  cdhash H"..."                                      changes every build
+signed:  identifier "com.framestudio.app" and certificate leaf = H"..."   stable
+```
+
+Verified by building the helper twice with a source change in between: the binary hash
+changed while the designated requirement stayed byte identical. The grant therefore
+survives rebuilds now.
+
+The build falls back to ad-hoc signing when the identity is not installed, so a fresh
+clone still builds. A real Developer ID certificate is still the answer for distributing
+the app to other people; this only solves local rebuilds.

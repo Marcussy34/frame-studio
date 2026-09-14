@@ -21,7 +21,20 @@ npm run desktop:package
 open "release/mac-arm64/Frame Studio.app"
 ```
 
-You can copy the resulting **Frame Studio.app** to `~/Applications`. Packaging writes to `release/` and never replaces an installed copy, so copy it across after rebuilding or you will keep launching the older app. `start.command` opens the installed or built app. Generated application bundles, user media, and local settings are excluded from this source repository.
+You can copy the resulting **Frame Studio.app** to `~/Applications`. Packaging writes to `release/` and never replaces an installed copy, so copy it across after rebuilding or you will keep launching the older app.
+
+Run this once before your first build:
+
+```sh
+bash desktop/create-signing-identity.sh
+```
+
+It creates a local self-signed code signing identity and asks for your password to trust
+it. Without it the build falls back to ad-hoc signing, which has no stable identity, so
+macOS treats every rebuild as a different program and drops the Screen Recording
+permission you already granted. With it, you grant that permission once and it survives
+rebuilds. No Apple Developer membership is needed. It is local only and is not a
+substitute for a Developer ID certificate if you ever distribute the app. `start.command` opens the installed or built app. Generated application bundles, user media, and local settings are excluded from this source repository.
 
 ## Use it
 
