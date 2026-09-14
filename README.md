@@ -1,6 +1,8 @@
 # Frame Studio
 
-A standalone Mac video canvas editor. Import a video, give it a background and frame, then export a finished MP4.
+A standalone Mac screen recorder and video canvas editor. Record your screen or import a video, give it a background and frame, then export a finished MP4.
+
+Recordings capture the cursor as data rather than pixels, so Frame Studio redraws it afterwards: larger, spring smoothed, motion blurred, with click effects and an automatic zoom that follows where you are working.
 
 ## Build the desktop app
 
@@ -19,15 +21,16 @@ npm run desktop:package
 open "release/mac-arm64/Frame Studio.app"
 ```
 
-You can copy the resulting **Frame Studio.app** to `~/Applications`. `start.command` opens the installed or built app. Generated application bundles, user media, and local settings are excluded from this source repository.
+You can copy the resulting **Frame Studio.app** to `~/Applications`. Packaging writes to `release/` and never replaces an installed copy, so copy it across after rebuilding or you will keep launching the older app. `start.command` opens the installed or built app. Generated application bundles, user media, and local settings are excluded from this source repository.
 
 ## Use it
 
-1. Drop a recording onto the editor, or choose **Import video**. `Command+O` also opens the picker.
+1. Choose **Record screen**, pick a display, and a three second countdown starts. The window hides itself so it does not appear in its own recording. Stop with the floating button or `Command+Shift+/`, and the finished recording opens in the editor. Or drop a recording onto the editor, or choose **Import video**. `Command+O` also opens the picker.
 2. Choose from 24 gradients, customize three colors and direction, switch between linear/radial gradients, choose a solid color or pattern, or import a background image. Change aspect ratio, padding, corners, shadow, video size, and position.
 3. Play, pause, or seek through the actual video. `Space` toggles playback. Preview mute does not change exported audio.
-4. Choose **Export video**, select a resolution, and choose whether to keep the original audio.
-5. Click **Export MP4**, then **Download MP4** when it finishes. Choose the destination in the native save dialog.
+4. For recordings, the **Cursor & zoom** panel appears in the inspector. Tune cursor size, smoothing, motion blur, click effects, zoom strength, and zoom speed. Everything previews live as you drag, because the preview and the export share one renderer.
+5. Choose **Export video**, select a resolution, and choose whether to keep the original audio.
+6. Click **Export MP4**, then **Download MP4** when it finishes. Choose the destination in the native save dialog.
 
 The editor restores active exports and the latest completed download for the current video after a browser refresh. You can cancel an export and continue editing. Replacing a recording keeps your chosen canvas styling. Reset restores the default canvas.
 
@@ -42,7 +45,17 @@ The editor restores active exports and the latest completed download for the cur
 - Original files are never overwritten. Session files live in the Mac temporary directory. The most recent 12 completed jobs are retained during the session.
 - Canvas preferences persist in the desktop app's data directory and survive relaunches. Videos and completed exports are temporary and are removed when the app quits. Save finished videos before quitting.
 - Background images support JPG, PNG, and WebP up to 20 MB and 40 million pixels. They are normalized locally to an sRGB JPEG up to 1440 pixels per side, fill the canvas without stretching, and are remembered with your canvas preferences. Transparent areas are flattened to white.
-- HDR color finishing, trimming, recording, and automatic cursor tracking are outside this first version. Output uses 8-bit H.264.
+- HDR color finishing and trimming are outside this version. Output uses 8-bit H.264.
+
+## Recording behavior
+
+- Recording captures one display at full resolution with the cursor **excluded from the pixels**, and logs cursor position and clicks separately at roughly 500Hz. That separation is what makes the cursor editable afterwards.
+- macOS asks for Screen Recording permission the first time. After granting it you must **quit and reopen Frame Studio** before capture works, which is an Apple requirement rather than a fault in the app.
+- Each recording is saved as a bundle holding the video, the raw cursor track, and the metadata needed to interpret them together. The raw track is never modified, so any cursor or zoom setting can be retuned later without recording again.
+- Capture runs at roughly 3MB per second at 4K, so a five minute recording is close to a gigabyte. Saved recordings are listed with their sizes in the Record dialog and can be deleted there.
+- Auto zoom eases in around clicks and back out afterwards, and the frame is clamped so it never shows past the edge of the recording.
+- **Imported video cannot have these features.** The cursor in an imported file is already burned into the pixels, so there is nothing to redraw and no position data to smooth. The Cursor & zoom panel only appears for recordings made in Frame Studio.
+- Region and window selection, audio capture, and webcam are not in this version. Recording covers the whole of one display.
 
 Use **Frame Studio > Quit Frame Studio** or close the app window to quit. Shutdown stops video processing and deletes the temporary session. No external upload service, account, database, or API key is used.
 
