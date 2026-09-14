@@ -104,8 +104,11 @@ export interface RecordingOutcome {
 // preferences already are. Absent in the browser-only dev server, where screen capture
 // is not available at all.
 export interface PermissionReport {
+  // Held by the capture helper. This grant follows the responsible process, so granting
+  // it to Frame Studio covers the helper too.
   screenRecording: boolean;
-  inputMonitoring: boolean;
+  // Held by the app itself, which is where the cursor is tapped. libuiohook refuses to
+  // run without it, so Accessibility is the grant to check, not Input Monitoring.
   accessibility: boolean;
 }
 
@@ -113,6 +116,8 @@ export interface RecordingService {
   // What the capture helper can actually see. These grants are keyed to code identity,
   // so a stale System Settings entry can read as enabled while the process is denied.
   permissions(): Promise<PermissionReport>;
+  // Triggers the macOS Accessibility prompt and reports where things stand after it.
+  requestCursorAccess(): Promise<PermissionReport>;
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
   // Opens the drag-to-select overlay. Resolves null when the user cancels.

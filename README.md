@@ -63,7 +63,7 @@ The editor restores active exports and the latest completed download for the cur
 ## Recording behavior
 
 - Recording captures one display at full resolution with the cursor **excluded from the pixels**, and logs cursor position and clicks separately at roughly 500Hz. That separation is what makes the cursor editable afterwards.
-- macOS asks for Screen Recording permission the first time. After granting it you must **quit and reopen Frame Studio** before capture works, which is an Apple requirement rather than a fault in the app.
+- macOS asks for two permissions. **Screen Recording** covers the pixels, and after granting it you must **quit and reopen Frame Studio** before capture works, which is an Apple requirement rather than a fault in the app. **Accessibility** covers the cursor, takes effect immediately, and is what lets Frame Studio see where your pointer is. Without it a recording refuses to start rather than producing a video with no cursor in it.
 - Each recording is saved as a bundle holding the video, the raw cursor track, and the metadata needed to interpret them together. The raw track is never modified, so any cursor or zoom setting can be retuned later without recording again.
 - Capture runs at roughly 3MB per second at 4K, so a five minute recording is close to a gigabyte. Saved recordings are listed with their sizes in the Record dialog and can be deleted there.
 - Auto zoom eases in around clicks and back out afterwards, and the frame is clamped so it never shows past the edge of the recording.
@@ -72,6 +72,7 @@ The editor restores active exports and the latest completed download for the cur
 - While recording a window, the cursor is **hidden whenever it leaves that window**. Clamping it to the edge would draw a pointer that was never there.
 - Recording an area crops the capture to the box you drew, so the exported video is exactly that size rather than a scaled down screen. The cursor is hidden whenever it leaves the area, the same as for a window.
 - Audio capture and webcam are not in this version.
+- Cursor positions are captured to whole screen points. The spring smoothing works on that, so the redrawn cursor moves smoothly rather than in steps.
 
 Use **Frame Studio > Quit Frame Studio** or close the app window to quit. Shutdown stops video processing and deletes the temporary session. No external upload service, account, database, or API key is used.
 

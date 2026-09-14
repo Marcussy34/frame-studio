@@ -3,11 +3,15 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
+import { createRequire } from 'node:module';
 import sharp from 'sharp';
 import { bundleMedia } from './bundle-media.mjs';
 import { buildRecorder } from './recorder/build.mjs';
 
 const execute = promisify(execFile);
+// Native modules are staged by version rather than copied, so the installed tree is the
+// one npm resolves rather than whatever the dev tree happens to hold.
+const uiohookVersion = createRequire(import.meta.url)('uiohook-napi/package.json').version;
 const root = resolve('.');
 const stage = join(root, '.desktop-build');
 const application = join(stage, 'app');
@@ -24,7 +28,8 @@ await writeFile(
       author: 'Frame Studio',
       license: 'UNLICENSED',
       main: 'main.cjs',
-      dependencies: { sharp: sharp.versions.sharp },
+      // Both are native. sharp resizes the icon, uiohook-napi taps the cursor.
+      dependencies: { sharp: sharp.versions.sharp, 'uiohook-napi': uiohookVersion },
     },
     null,
     2,
@@ -43,7 +48,8 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  external: ['electron', 'sharp'],
+  // Native modules stay outside the bundle so their prebuilt binaries still resolve.
+  external: ['electron', 'sharp', 'uiohook-napi'],
   legalComments: 'linked',
 });
 const media = await bundleMedia(join(stage, 'media'));

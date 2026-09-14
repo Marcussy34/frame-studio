@@ -6,11 +6,15 @@
 //
 // Protocol: newline delimited JSON. Commands arrive on stdin, events go to stdout.
 //
-// Two hard-won constraints, both verified the slow way:
-//   1. NSEvent.addGlobalMonitorForEvents delivers NOTHING in a non-GUI CLI helper,
-//      even with every permission granted. CGEventTap is the only thing that works.
-//   2. An event tap delivers through the run loop, so the run loop must actually run.
-//      Sleeping instead leaves it idle and silently yields zero events.
+// The cursor is NOT tracked here. It used to be, via a CGEventTap, and the tap was
+// created successfully every time and then never fed a single event. macOS resolves
+// Screen Recording against the responsible process, so this helper inherits the app's
+// grant, but it resolves input tapping against the calling binary, and a bare
+// executable inside Contents/MacOS is not a bundle that can be granted anything.
+// Cursor tracking now lives in the Electron main process. See desktop/cursor-track.ts.
+//
+// The recording's t=0 therefore arrives from outside, as `startedAt` on the start
+// command, so both halves of a bundle measure time from the same origin.
 
 import AppKit
 import CoreGraphics
@@ -46,116 +50,6 @@ func scaleFor(displayID: CGDirectDisplayID) -> Double {
 
 func nameFor(displayID: CGDirectDisplayID) -> String {
     screenFor(displayID: displayID)?.localizedName ?? "Display \(displayID)"
-}
-
-// MARK: - cursor track
-
-struct Sample: Codable {
-    let t: Double
-    let x: Double
-    let y: Double
-    let e: String
-    let b: Int
-}
-
-// A CGEventTap callback is a C function pointer and cannot capture context, so the
-// recorder has to be reachable through a global.
-var globalRecorder: CursorRecorder?
-
-final class CursorRecorder: @unchecked Sendable {
-    private var samples: [Sample] = []
-    private let lock = NSLock()
-    private var t0: CFAbsoluteTime = 0
-    private var tap: CFMachPort?
-    private var source: CFRunLoopSource?
-    private(set) var installed = false
-
-    var startedAt: CFAbsoluteTime { t0 }
-
-    func start() {
-        t0 = CFAbsoluteTimeGetCurrent()
-        let mask: CGEventMask =
-            (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
-            | (1 << CGEventType.otherMouseDragged.rawValue)
-            | (1 << CGEventType.leftMouseDown.rawValue)
-            | (1 << CGEventType.leftMouseUp.rawValue)
-            | (1 << CGEventType.rightMouseDown.rawValue)
-            | (1 << CGEventType.rightMouseUp.rawValue)
-            | (1 << CGEventType.otherMouseDown.rawValue)
-            | (1 << CGEventType.otherMouseUp.rawValue)
-
-        let callback: CGEventTapCallBack = { _, type, event, _ in
-            guard let recorder = globalRecorder else { return Unmanaged.passUnretained(event) }
-            // CGEvent.location is already top-left origin. Do not flip it.
-            let point = event.location
-            switch type {
-            case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-                recorder.append(
-                    Sample(t: recorder.now(), x: point.x, y: point.y, e: "m", b: -1))
-            case .leftMouseDown:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "d", b: 0))
-            case .leftMouseUp:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "u", b: 0))
-            case .rightMouseDown:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "d", b: 1))
-            case .rightMouseUp:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "u", b: 1))
-            case .otherMouseDown:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "d", b: 2))
-            case .otherMouseUp:
-                recorder.append(Sample(t: recorder.now(), x: point.x, y: point.y, e: "u", b: 2))
-            default:
-                break
-            }
-            return Unmanaged.passUnretained(event)
-        }
-
-        guard
-            let created = CGEvent.tapCreate(
-                tap: .cgSessionEventTap,
-                place: .headInsertEventTap,
-                options: .listenOnly,
-                eventsOfInterest: mask,
-                callback: callback,
-                userInfo: nil)
-        else { return }
-        tap = created
-        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: created, enable: true)
-        installed = true
-    }
-
-    fileprivate func now() -> Double { CFAbsoluteTimeGetCurrent() - t0 }
-
-    fileprivate func append(_ sample: Sample) {
-        lock.lock()
-        samples.append(sample)
-        lock.unlock()
-    }
-
-    func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        tap = nil
-        source = nil
-    }
-
-    func write(to path: String) throws -> (count: Int, clicks: Int) {
-        lock.lock()
-        let snapshot = samples.sorted { $0.t < $1.t }
-        lock.unlock()
-        let encoder = JSONEncoder()
-        var data = Data()
-        for sample in snapshot {
-            data.append(try encoder.encode(sample))
-            data.append(0x0A)
-        }
-        try data.write(to: URL(fileURLWithPath: path))
-        return (snapshot.count, snapshot.filter { $0.e == "d" }.count)
-    }
 }
 
 // MARK: - stream plumbing
@@ -195,17 +89,18 @@ final class RecDelegate: NSObject, SCRecordingOutputDelegate {
 
 // ScreenCaptureKit wants a stream output attached. It also hands us the wall clock time
 // of the first real frame, which is how videoStartOffset is measured rather than assumed.
+// Seconds since epoch, so it is directly comparable to the origin sent from the app.
 final class SinkOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
-    private var first: CFAbsoluteTime?
+    private var first: Double?
 
     var frames: Int {
         lock.lock()
         defer { lock.unlock() }
         return count
     }
-    var firstFrameAt: CFAbsoluteTime? {
+    var firstFrameAt: Double? {
         lock.lock()
         defer { lock.unlock() }
         return first
@@ -217,7 +112,7 @@ final class SinkOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     ) {
         guard type == .screen, sampleBuffer.imageBuffer != nil else { return }
         lock.lock()
-        if first == nil { first = CFAbsoluteTimeGetCurrent() }
+        if first == nil { first = Date().timeIntervalSince1970 }
         count += 1
         lock.unlock()
     }
@@ -228,7 +123,9 @@ final class SinkOutput: NSObject, SCStreamOutput, @unchecked Sendable {
 final class RecordingSession {
     let stream: SCStream
     let sink: SinkOutput
-    let recorder: CursorRecorder
+    // Seconds since epoch, handed over by the app so the cursor track and this bundle
+    // agree on what t=0 means.
+    let startedAt: Double
     let interruption: Interruption
     let outDir: String
     let scale: Double
@@ -243,14 +140,14 @@ final class RecordingSession {
     private var lastSampled: CGRect = .null
 
     init(
-        stream: SCStream, sink: SinkOutput, recorder: CursorRecorder,
+        stream: SCStream, sink: SinkOutput, startedAt: Double,
         interruption: Interruption, outDir: String, scale: Double,
         pointsWidth: Int, pointsHeight: Int, kind: String, title: String,
         window: SCWindow?, origin: CGRect
     ) {
         self.stream = stream
         self.sink = sink
-        self.recorder = recorder
+        self.startedAt = startedAt
         self.interruption = interruption
         self.outDir = outDir
         self.scale = scale
@@ -285,7 +182,7 @@ final class RecordingSession {
         }
         lastSampled = frame
         frames.append([
-            "t": CFAbsoluteTimeGetCurrent() - recorder.startedAt,
+            "t": Date().timeIntervalSince1970 - startedAt,
             "x": frame.origin.x, "y": frame.origin.y,
             "w": frame.width, "h": frame.height,
         ])
@@ -293,7 +190,8 @@ final class RecordingSession {
 }
 
 func startRecording(
-    displayID: CGDirectDisplayID?, windowID: CGWindowID?, region: CGRect?, outDir: String
+    displayID: CGDirectDisplayID?, windowID: CGWindowID?, region: CGRect?, outDir: String,
+    startedAt: Double
 ) async -> RecordingSession? {
     guard CGPreflightScreenCaptureAccess() else {
         _ = CGRequestScreenCaptureAccess()
@@ -305,20 +203,6 @@ func startRecording(
         ])
         return nil
     }
-    // A listen-only mouse tap still needs Input Monitoring. Without it the tap is
-    // created successfully but never delivers a single event, which produces a
-    // recording with an empty cursor track and no error anywhere. Checking up front
-    // turns a silent failure into something the app can explain.
-    guard CGPreflightListenEventAccess() else {
-        _ = CGRequestListenEventAccess()
-        emit([
-            "event": "permission-required",
-            "permission": "input-monitoring",
-            "needsRestart": true,
-        ])
-        return nil
-    }
-
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
@@ -412,14 +296,11 @@ func startRecording(
         try stream.addRecordingOutput(
             SCRecordingOutput(configuration: recConfig, delegate: RecDelegate()))
 
-        let recorder = CursorRecorder()
-        globalRecorder = recorder
-        recorder.start()
         try await stream.startCapture()
-        emit(["event": "started", "tapInstalled": recorder.installed])
+        emit(["event": "started"])
 
         return RecordingSession(
-            stream: stream, sink: sink, recorder: recorder, interruption: interruption,
+            stream: stream, sink: sink, startedAt: startedAt, interruption: interruption,
             outDir: outDir, scale: scale,
             pointsWidth: pointsWidth, pointsHeight: pointsHeight,
             kind: kind, title: title, window: window, origin: origin)
@@ -436,17 +317,16 @@ func finishRecording(_ session: RecordingSession) async {
         // An already-stopped stream throws here, which is expected after an
         // interruption. The bundle is still worth finalising.
     }
-    session.recorder.stop()
-    globalRecorder = nil
-
-    let trackPath = (session.outDir as NSString).appendingPathComponent("cursor.jsonl")
     let metaPath = (session.outDir as NSString).appendingPathComponent("meta.json")
     do {
-        let written = try session.recorder.write(to: trackPath)
-        let duration = CFAbsoluteTimeGetCurrent() - session.recorder.startedAt
-        // Measured, not assumed: the tap starts fractionally before startCapture returns.
-        let offset = (session.sink.firstFrameAt ?? session.recorder.startedAt)
-            - session.recorder.startedAt
+        // Measured, not assumed. The gap is real and not small: the cursor track opens
+        // before this helper is even asked to start, and the app hides itself and the
+        // stream warms up before the first frame lands.
+        let firstFrame = session.sink.firstFrameAt ?? session.startedAt
+        let offset = firstFrame - session.startedAt
+        // The video's own length, which is what the recordings list shows. The cursor
+        // track runs longer at both ends and is lined up by videoStartOffset.
+        let duration = max(0, Date().timeIntervalSince1970 - firstFrame)
 
         var meta: [String: Any] = [
             "version": 1,
@@ -466,16 +346,11 @@ func finishRecording(_ session: RecordingSession) async {
         var finished: [String: Any] = [
             "event": "finished",
             "frames": session.sink.frames,
-            "samples": written.count,
-            "clicks": written.clicks,
             "duration": duration,
         ]
         // Absent on a normal stop, so the bridge only explains itself when something
         // actually went wrong.
         if let reason = session.interruption.reason { finished["interrupted"] = reason }
-        // Callers need to know the cursor track came back empty, since the video looks
-        // perfectly fine and nothing else would reveal it.
-        if written.count == 0 { finished["noCursorData"] = true }
         emit(finished)
     } catch {
         emitError("could not finalise recording: \(error.localizedDescription)")
@@ -526,8 +401,8 @@ var running = true
 var sampleTicks = 0
 
 while running {
-    // Pumping the run loop is what lets the event tap deliver. Never replace this
-    // with a sleep.
+    // ScreenCaptureKit delivers through the run loop, so it has to keep turning.
+    // Never replace this with a sleep.
     RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 
     for command in commands.drain() {
@@ -560,11 +435,15 @@ while running {
                 emitError("start needs display or window")
                 break
             }
+            // Falls back to now so the helper is still usable on its own, which is how
+            // the capture tests drive it.
+            let startedAt = command["startedAt"] as? Double ?? Date().timeIntervalSince1970
             session = await startRecording(
                 displayID: displayID.map { CGDirectDisplayID($0) },
                 windowID: windowID.map { CGWindowID($0) },
                 region: region,
-                outDir: outDir)
+                outDir: outDir,
+                startedAt: startedAt)
         case "stop":
             guard let active = session else {
                 emitError("not recording")
@@ -602,14 +481,13 @@ while running {
 
 // Only windows a person could plausibly want to record: on screen, titled, and big
 // enough to be a real window rather than a shadow or a menu.
-// Diagnostic. Reports what this process can actually see, which matters because these
-// grants are keyed to code identity and a stale entry still shows as enabled.
+// Diagnostic. Reports what this process can actually see, which matters because the
+// grant is keyed to code identity and a stale entry still shows as enabled. The app
+// answers for Accessibility itself, since that is where the cursor is tapped.
 func reportPermissions() {
     emit([
         "event": "permissions",
         "screenRecording": CGPreflightScreenCaptureAccess(),
-        "inputMonitoring": CGPreflightListenEventAccess(),
-        "accessibility": AXIsProcessTrusted(),
     ])
 }
 

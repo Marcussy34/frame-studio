@@ -414,6 +414,18 @@ export async function createApp({
     }
   });
 
+  // Separate from the read-only check above because this one deliberately puts a
+  // system dialog on screen, which must never happen just from opening a dialog.
+  app.post('/api/recording/access', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json(await service.requestCursorAccess());
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.get('/api/windows', async (_req, res) => {
     const service = requireRecording(res);
     if (!service) return;

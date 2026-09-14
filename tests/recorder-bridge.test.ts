@@ -45,43 +45,27 @@ describe('createRecorder', () => {
       });
     `);
     const recorder = createRecorder(binary);
-    await expect(recorder.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(
+    await expect(recorder.start({ displayID: 1, outDir: '/tmp/x', startedAt: 1 })).rejects.toThrow(
       /Screen Recording/,
     );
     recorder.dispose();
   });
 
-  it('names the Input Monitoring pane instead when that is the missing one', async () => {
-    // These live in different System Settings panes, and Input Monitoring is not
-    // guessable from the symptom, so the message has to say which.
+  it('hands the helper the cursor track origin, so both halves share a timebase', async () => {
+    // videoStartOffset is measured against this. Dropping it would silently misalign
+    // the redrawn cursor by however long the stream took to warm up.
     const binary = await fakeHelper(`
-      process.stdin.on('data', () => {
-        console.log(JSON.stringify({
-          event: 'permission-required', permission: 'input-monitoring', needsRestart: true,
-        }));
+      process.stdin.on('data', (chunk) => {
+        const command = JSON.parse(String(chunk));
+        console.log(JSON.stringify(command.startedAt === 1700000000.5
+          ? { event: 'started' }
+          : { event: 'error', message: 'startedAt arrived as ' + command.startedAt }));
       });
     `);
     const recorder = createRecorder(binary);
-    await expect(recorder.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(
-      /Input Monitoring/,
-    );
-    recorder.dispose();
-  });
-
-  it('reports a recording that captured no cursor events', async () => {
-    const binary = await fakeHelper(`
-      let seen = 0;
-      process.stdin.on('data', () => {
-        seen += 1;
-        if (seen === 1) console.log(JSON.stringify({ event: 'started', tapInstalled: true }));
-        else console.log(JSON.stringify({
-          event: 'finished', frames: 100, samples: 0, clicks: 0, duration: 3, noCursorData: true,
-        }));
-      });
-    `);
-    const recorder = createRecorder(binary);
-    await recorder.start({ displayID: 1, outDir: '/tmp/x' });
-    expect((await recorder.stop()).noCursorData).toBe(true);
+    await expect(
+      recorder.start({ displayID: 1, outDir: '/tmp/x', startedAt: 1_700_000_000.5 }),
+    ).resolves.toBeUndefined();
     recorder.dispose();
   });
 
@@ -90,17 +74,15 @@ describe('createRecorder', () => {
       let seen = 0;
       process.stdin.on('data', () => {
         seen += 1;
-        if (seen === 1) console.log(JSON.stringify({ event: 'started', tapInstalled: true }));
-        else console.log(JSON.stringify({
-          event: 'finished', frames: 429, samples: 2745, clicks: 8, duration: 7.9,
-        }));
+        if (seen === 1) console.log(JSON.stringify({ event: 'started' }));
+        else console.log(JSON.stringify({ event: 'finished', frames: 429, duration: 7.9 }));
       });
     `);
     const recorder = createRecorder(binary);
-    await recorder.start({ displayID: 1, outDir: '/tmp/x' });
+    await recorder.start({ displayID: 1, outDir: '/tmp/x', startedAt: 1 });
     const result = await recorder.stop();
     expect(result.frames).toBe(429);
-    expect(result.clicks).toBe(8);
+    expect(result.duration).toBe(7.9);
     recorder.dispose();
   });
 

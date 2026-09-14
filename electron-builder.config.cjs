@@ -23,7 +23,13 @@ module.exports = {
   productName: 'Frame Studio',
   directories: { app: '.desktop-build/app', output: process.env.FRAME_DESKTOP_OUTPUT || 'release' },
   files: ['**/*', '!**/*.map', '!package-lock.json'],
-  asarUnpack: ['node_modules/sharp/**/*', 'node_modules/@img/**/*'],
+  // Native modules have to sit on disk as real files: a .node cannot be loaded from
+  // inside an asar archive.
+  asarUnpack: [
+    'node_modules/sharp/**/*',
+    'node_modules/@img/**/*',
+    'node_modules/uiohook-napi/**/*',
+  ],
   extraFiles: [{ from: '.desktop-build/media', to: '.' }],
   npmRebuild: false,
   mac: {

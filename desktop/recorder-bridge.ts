@@ -3,25 +3,19 @@ import type { DisplayInfo, WindowInfo } from '../shared/recording';
 
 export type { DisplayInfo, WindowInfo };
 
-export interface RecordingResult {
+// What the helper alone can report. The cursor half of a recording is produced in the
+// Electron main process, so samples and clicks are merged in by the controller.
+export interface CaptureResult {
   frames: number;
-  samples: number;
-  clicks: number;
   duration: number;
   // Present only when a display change stopped the stream early.
   interrupted?: string;
-  // The video recorded but no cursor events arrived, so the cursor cannot be drawn.
-  noCursorData?: boolean;
-}
-
-export interface PermissionReport {
-  screenRecording: boolean;
-  inputMonitoring: boolean;
-  accessibility: boolean;
 }
 
 export interface Recorder {
-  permissions(): Promise<PermissionReport>;
+  // The helper captures pixels and nothing else, so screen recording is the only grant
+  // it can speak for.
+  permissions(): Promise<{ screenRecording: boolean }>;
   listDisplays(): Promise<DisplayInfo[]>;
   listWindows(): Promise<WindowInfo[]>;
   start(opts: {
@@ -29,8 +23,11 @@ export interface Recorder {
     windowID?: number;
     region?: { x: number; y: number; width: number; height: number };
     outDir: string;
+    // Seconds since epoch. The cursor track's t=0, handed over so the helper measures
+    // videoStartOffset against the same origin.
+    startedAt: number;
   }): Promise<void>;
-  stop(): Promise<RecordingResult>;
+  stop(): Promise<CaptureResult>;
   dispose(): void;
 }
 
@@ -94,14 +91,11 @@ export function createRecorder(binaryPath: string): Recorder {
           clearTimeout(timer);
           if (event.event === 'error') reject(new Error(String(event.message)));
           else if (event.event === 'permission-required') {
-            // The wording matters here: these two permissions live in different panes
-            // and the Input Monitoring one is not obvious from the symptom.
-            const which = String(event.permission);
+            // macOS needs the process restarted after this grant before capture works,
+            // so the message has to say so.
             reject(
               new Error(
-                which === 'input-monitoring'
-                  ? 'Frame Studio needs Input Monitoring to record the cursor. Enable it in System Settings, Privacy and Security, Input Monitoring, then quit and reopen Frame Studio.'
-                  : 'Frame Studio needs Screen Recording. Enable it in System Settings, Privacy and Security, Screen and System Audio Recording, then quit and reopen Frame Studio.',
+                'Frame Studio needs Screen Recording. Enable it in System Settings, Privacy and Security, Screen and System Audio Recording, then quit and reopen Frame Studio.',
               ),
             );
           } else resolve(event);
@@ -118,11 +112,7 @@ export function createRecorder(binaryPath: string): Recorder {
   return {
     async permissions() {
       const reply = await send({ cmd: 'permissions' }, (event) => event.event === 'permissions');
-      return {
-        screenRecording: reply.screenRecording as boolean,
-        inputMonitoring: reply.inputMonitoring as boolean,
-        accessibility: reply.accessibility as boolean,
-      };
+      return { screenRecording: reply.screenRecording as boolean };
     },
     async listDisplays() {
       const reply = await send({ cmd: 'list-displays' }, (event) => event.event === 'displays');
@@ -132,23 +122,26 @@ export function createRecorder(binaryPath: string): Recorder {
       const reply = await send({ cmd: 'list-windows' }, (event) => event.event === 'windows');
       return reply.windows as WindowInfo[];
     },
-    async start({ displayID, windowID, region, outDir }) {
+    async start({ displayID, windowID, region, outDir, startedAt }) {
       const command =
         windowID === undefined
-          ? { cmd: 'start', display: displayID, out: outDir, ...(region ? { region } : {}) }
-          : { cmd: 'start', window: windowID, out: outDir };
+          ? {
+              cmd: 'start',
+              display: displayID,
+              out: outDir,
+              startedAt,
+              ...(region ? { region } : {}),
+            }
+          : { cmd: 'start', window: windowID, out: outDir, startedAt };
       await send(command, (event) => event.event === 'started');
     },
     async stop() {
-      // Finalising writes the track and meta, so allow longer than a normal command.
+      // Finalising writes the meta, so allow longer than a normal command.
       const reply = await send({ cmd: 'stop' }, (event) => event.event === 'finished', 60_000);
       return {
         frames: reply.frames as number,
-        samples: reply.samples as number,
-        clicks: reply.clicks as number,
         duration: reply.duration as number,
         interrupted: reply.interrupted as string | undefined,
-        noCursorData: reply.noCursorData as boolean | undefined,
       };
     },
     dispose() {

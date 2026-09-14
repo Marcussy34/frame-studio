@@ -1,5 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { CursorTracker } from '../desktop/cursor-track';
 import { type ControllerDeps, createRecordingController } from '../desktop/recording-controller';
+
+function tracker(overrides: Partial<CursorTracker> = {}): CursorTracker {
+  return {
+    permitted: vi.fn(() => true),
+    requestPermission: vi.fn(() => true),
+    start: vi.fn(() => 1_700_000_000),
+    stop: vi.fn(),
+    write: vi.fn(async () => ({ count: 2745, clicks: 8 })),
+    ...overrides,
+  };
+}
 
 function deps(overrides: Partial<ControllerDeps> = {}): ControllerDeps {
   return {
@@ -8,9 +20,10 @@ function deps(overrides: Partial<ControllerDeps> = {}): ControllerDeps {
       listDisplays: vi.fn(),
       listWindows: vi.fn(),
       start: vi.fn(async () => {}),
-      stop: vi.fn(async () => ({ frames: 429, samples: 2745, clicks: 8, duration: 7.9 })),
+      stop: vi.fn(async () => ({ frames: 429, duration: 7.9 })),
       dispose: vi.fn(),
     },
+    cursor: tracker(),
     hideWindow: vi.fn(),
     showWindow: vi.fn(),
     showStop: vi.fn(),
@@ -27,24 +40,74 @@ describe('createRecordingController', () => {
     const injected = deps();
     const controller = createRecordingController(injected);
     await controller.start({ displayID: 1, outDir: '/tmp/x' });
-    expect(injected.recorder.start).toHaveBeenCalledWith({ displayID: 1, outDir: '/tmp/x' });
     expect(injected.hideWindow).toHaveBeenCalled();
     expect(injected.showStop).toHaveBeenCalled();
     expect(injected.registerShortcut).toHaveBeenCalled();
     expect(controller.isRecording()).toBe(true);
   });
 
-  it('restores the window and reports the result on stop', async () => {
+  it('opens the cursor track first and passes its origin to the helper', async () => {
+    // The two halves of a bundle are lined up by this number, so the order matters:
+    // listening has to begin before the helper does or the first moments are lost.
+    const injected = deps();
+    const controller = createRecordingController(injected);
+    await controller.start({ displayID: 1, outDir: '/tmp/x' });
+    expect(injected.cursor.start).toHaveBeenCalled();
+    expect(injected.recorder.start).toHaveBeenCalledWith({
+      displayID: 1,
+      outDir: '/tmp/x',
+      startedAt: 1_700_000_000,
+    });
+  });
+
+  it('restores the window and reports the merged result on stop', async () => {
     const injected = deps();
     const controller = createRecordingController(injected);
     await controller.start({ displayID: 1, outDir: '/tmp/x' });
     const result = await controller.stop();
-    expect(result?.frames).toBe(429);
+    // The helper counts frames, this process counts the cursor. Neither knows both.
+    expect(result).toMatchObject({ frames: 429, duration: 7.9, samples: 2745, clicks: 8 });
+    expect(result?.noCursorData).toBeUndefined();
+    expect(injected.cursor.write).toHaveBeenCalledWith('/tmp/x/cursor.jsonl');
     expect(injected.hideStop).toHaveBeenCalled();
     expect(injected.unregisterShortcut).toHaveBeenCalled();
     expect(injected.showWindow).toHaveBeenCalled();
     expect(injected.onFinished).toHaveBeenCalledWith(result);
     expect(controller.isRecording()).toBe(false);
+  });
+
+  it('flags a recording that captured no cursor events', async () => {
+    // The video looks perfectly fine in this case, so nothing else would reveal it.
+    const injected = deps({
+      cursor: tracker({ write: vi.fn(async () => ({ count: 0, clicks: 0 })) }),
+    });
+    const controller = createRecordingController(injected);
+    await controller.start({ displayID: 1, outDir: '/tmp/x' });
+    expect((await controller.stop())?.noCursorData).toBe(true);
+  });
+
+  it('stops listening even when the helper fails to finish', async () => {
+    // A global input hook left running after a failure would keep watching the mouse
+    // for the rest of the session.
+    const cursor = tracker();
+    const injected = deps({
+      cursor,
+      recorder: {
+        permissions: vi.fn(),
+        listDisplays: vi.fn(),
+        listWindows: vi.fn(),
+        start: vi.fn(async () => {}),
+        stop: vi.fn(async () => {
+          throw new Error('recorder helper exited');
+        }),
+        dispose: vi.fn(),
+      },
+    });
+    const controller = createRecordingController(injected);
+    await controller.start({ displayID: 1, outDir: '/tmp/x' });
+    await expect(controller.stop()).rejects.toThrow(/exited/);
+    expect(cursor.stop).toHaveBeenCalled();
+    expect(injected.showWindow).toHaveBeenCalled();
   });
 
   it('is idempotent, so the hotkey and the stop button cannot double stop', async () => {
@@ -62,7 +125,9 @@ describe('createRecordingController', () => {
   });
 
   it('restores the window when start fails, so a denied permission cannot strand the user', async () => {
+    const cursor = tracker();
     const injected = deps({
+      cursor,
       recorder: {
         permissions: vi.fn(),
         listDisplays: vi.fn(),
@@ -79,7 +144,27 @@ describe('createRecordingController', () => {
       /screen-recording/,
     );
     expect(controller.isRecording()).toBe(false);
+    expect(cursor.stop).toHaveBeenCalled();
     expect(injected.showWindow).toHaveBeenCalled();
     expect(injected.hideStop).toHaveBeenCalled();
+  });
+
+  it('restores the window when the cursor track cannot open', async () => {
+    // Accessibility is refused here, which is now the failure that stops a recording
+    // before it starts.
+    const injected = deps({
+      cursor: tracker({
+        start: vi.fn(() => {
+          throw new Error('Frame Studio needs Accessibility to record the cursor.');
+        }),
+      }),
+    });
+    const controller = createRecordingController(injected);
+    await expect(controller.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(
+      /Accessibility/,
+    );
+    expect(controller.isRecording()).toBe(false);
+    expect(injected.recorder.start).not.toHaveBeenCalled();
+    expect(injected.showWindow).toHaveBeenCalled();
   });
 });

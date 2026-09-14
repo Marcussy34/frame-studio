@@ -133,7 +133,7 @@ export function useStudio() {
           // the user why their cursor is missing.
           if (status.last.noCursorData) {
             setError(
-              'This recording has no cursor data. Enable Input Monitoring for Frame Studio in System Settings, Privacy and Security, then quit and reopen the app.',
+              'This recording has no cursor data. Enable Accessibility for Frame Studio in System Settings, Privacy and Security, then record again.',
             );
           }
         }

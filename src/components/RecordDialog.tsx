@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Crop, Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
-import type { CaptureRegion, DisplayInfo, WindowInfo } from '../../shared/recording';
+import { Crop, InfoCircle, Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
+import type {
+  CaptureRegion,
+  DisplayInfo,
+  PermissionReport,
+  WindowInfo,
+} from '../../shared/recording';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -33,6 +38,33 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
   const [countdown, setCountdown] = useState<number | null>(null);
   const [region, setRegion] = useState<CaptureRegion | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<PermissionReport | null>(null);
+
+  // Checked when the dialog opens rather than discovered after a countdown. Without
+  // Accessibility a recording refuses to start, and finding that out three seconds in,
+  // with the window already hidden, is a miserable way to learn it.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = async () => {
+      try {
+        const report = await api<PermissionReport>('/api/recording/permissions');
+        if (cancelled) return;
+        setPermissions(report);
+        // Granting happens over in System Settings, so the notice watches for it
+        // rather than leaving stale advice on screen.
+        if (!report.accessibility) timer = setTimeout(() => void check(), 2000);
+      } catch {
+        if (!cancelled) setPermissions(null);
+      }
+    };
+    void check();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open]);
 
   // Windows are refetched every time the picker opens, since the list goes stale as
   // soon as anyone opens or closes something.
@@ -229,6 +261,39 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
           </div>
         ) : (
           <p className="py-8 text-center text-5xl font-semibold tabular-nums">{countdown}</p>
+        )}
+
+        {permissions && !permissions.accessibility && countdown === null && (
+          <div className="space-y-2 rounded-lg border border-primary/70 bg-primary/8 p-3">
+            <p className="flex items-start gap-2 text-xs text-muted-foreground">
+              <InfoCircle className="mt-px size-4 shrink-0 text-primary" />
+              <span>
+                Frame Studio cannot see your cursor yet, so recording will not start. Allow
+                Accessibility to capture where your pointer moves and clicks.
+              </span>
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-full text-xs"
+              onClick={async () => {
+                // macOS shows its own dialog here, which carries the only reliable link
+                // into the right System Settings pane.
+                setError(null);
+                try {
+                  setPermissions(
+                    await api<PermissionReport>('/api/recording/access', {
+                      method: 'POST',
+                    }),
+                  );
+                } catch (cause) {
+                  setError((cause as Error).message);
+                }
+              }}
+            >
+              Allow cursor recording
+            </Button>
+          </div>
         )}
 
         {error && <p className="text-xs text-destructive">{error}</p>}

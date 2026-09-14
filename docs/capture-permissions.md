@@ -5,40 +5,102 @@ from Apple's documentation.
 
 ## Summary
 
-| Permission       | Needed for                                                                  | How it is granted                                                                |
-| ---------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Screen Recording | `SCShareableContent` and `SCStream`, so both listing displays and capturing | System prompt on first use, then the process must be restarted                   |
-| Input Monitoring | The `CGEventTap` that logs cursor position and clicks                       | System Settings, Privacy and Security, Input Monitoring. **Required**, see below |
-| Accessibility    | Not required for a listen-only mouse tap                                    | Not requested                                                                    |
+| Permission       | Held by            | Needed for                                                             | How it is granted                                               |
+| ---------------- | ------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Screen Recording | the capture helper | `SCShareableContent` and `SCStream`, so listing displays and capturing | System prompt on first use, then the process must be restarted  |
+| Accessibility    | Frame Studio.app   | The event tap that logs cursor position and clicks                     | System Settings, Privacy and Security, Accessibility. Immediate |
+| Input Monitoring | nobody             | Nothing any more, see below                                            | Not requested                                                   |
 
-**Input Monitoring is genuinely required**, and this was confirmed the unpleasant way.
-After the app was given a new code signing identity, its existing Input Monitoring grant
-no longer applied. Screen recording still worked perfectly, so the video looked fine,
-but the event tap delivered **zero events** and the recording came back with an empty
-cursor track and no error anywhere.
+## Why the cursor is tracked in the app and not in the helper
 
-That answers a question left open earlier: Apple's documentation only ties event tap
-permission to _key_ events, but a listen-only **mouse** tap needs Input Monitoring too.
-`CGEvent.tapCreate` still succeeds without it. The tap is simply never fed.
+This is the single most expensive thing learned here, so it is written out in full.
 
-The helper now calls `CGPreflightListenEventAccess()` before recording and reports
-`permission-required` with `input-monitoring` rather than producing a silently broken
-bundle, and a finished recording that captured no cursor events is flagged with
-`noCursorData` so the app can explain itself.
+macOS resolves the two grants against **different processes**:
 
-## Does the bundled helper need its own grant?
+- **Screen Recording** resolves against the **responsible process**. The helper is
+  spawned by Frame Studio, so it inherits the app's grant. This works, and it is why a
+  separate Swift binary was viable in the first place.
+- **Input tapping** resolves against the **calling binary**. The helper is a bare
+  executable in `Contents/MacOS`, not a bundle, so TCC has nothing to key a grant to.
+
+The result was a perfect silent failure. `CGEvent.tapCreate` succeeded every time, the
+video recorded flawlessly, and the tap was **never fed a single event**. The bundle came
+back with an empty cursor track and no error anywhere. Measured with a diagnostic
+command on the helper, spawned by the packaged app:
+
+```json
+{ "screenRecording": true, "inputMonitoring": false, "accessibility": false }
+```
+
+**Also tried and ruled out:** giving the helper the app's exact designated requirement,
+byte for byte. Still denied. A bare executable is not a bundle, and TCC will not grant
+one an input permission however it is signed. Adding the helper by hand with the `+`
+button in System Settings does work, but asking every user to do that is not a product.
+
+**The fix was to move the tap into the Electron main process**, where the calling
+process is Frame Studio.app itself. `uiohook-napi` provides it, and the grant it needs
+is **Accessibility**, because libuiohook checks `AXIsProcessTrustedWithOptions` before
+it will run at all. Accessibility also covers event tapping, so Input Monitoring is no
+longer involved anywhere in this app.
+
+That check is worth more than it looks. It closes the failure mode by construction:
+either the hook starts, which means the process is trusted and the tap is fed, or
+`uIOhook.start()` throws and the recording refuses to begin with a message naming the
+pane. There is no longer a path to a video with a silently empty cursor track.
+`noCursorData` survives as a second line of defence for the honest case where nobody
+touched the mouse.
+
+Verified end to end against the packaged app, with synthetic mouse events so the result
+did not depend on a person moving the mouse:
+
+```
+permissions: {"screenRecording":true,"accessibility":true}
+stop: {"frames":132,"duration":2.87,"samples":200,"clicks":0}
+meta: {"videoStartOffset":0.465,"displayScale":1,"captureKind":"display"}
+cursor events: 200
+```
+
+## An upstream libuiohook bug worth knowing
+
+`libuiohook/src/darwin/input_hook.c` handles `kCGEventOtherMouseUp` by calling
+`process_button_pressed`, not `process_button_released`. **Releases of the middle button
+and anything past it arrive as presses.** Left and right, the two that matter, are
+handled correctly.
+
+Left alone this fires a second click ripple and a second zoom trigger on every middle
+click. `desktop/cursor-track.ts` reads a press of a button that is already down as the
+release it must actually be, which reconstructs the truth without depending on the
+upstream fix.
+
+Found by posting a synthetic middle click during a real recording and reading the track
+back: two `"e":"d"` events 66ms apart, which was exactly the gap between the posted down
+and up.
+
+## One more uiohook detail
+
+`uiohook-napi` rewrites `EVENT_MOUSE_DRAGGED` to `EVENT_MOUSE_MOVED` in its N-API layer
+before the event reaches JavaScript, so dragging arrives as ordinary movement and
+`mousemove` alone would in fact have been enough. The tracker still handles the dragged
+type, because that rewrite is an implementation detail and losing drags would freeze the
+cursor for the whole of every drag.
+
+## Does the bundled helper need its own Screen Recording grant?
 
 **No, in every configuration tested.** This was the open risk in the design, because the
 helper carries a different code identity from the app:
 
 - App bundle: `com.framestudio.app`
-- Helper: `frame-recorder-55554944d9ea36264e1a39ca86a574ecdafe2bd7`
+- Helper: `com.framestudio.recorder`
 
-Both are ad-hoc signed. Despite the distinct identity, the bundled helper at
-`Contents/MacOS/frame-recorder` enumerated displays and recorded successfully, so macOS
-resolved the grant through the responsible process rather than the helper's own identity.
-The packaged app spawning the helper records end to end, which `desktop-tests/recorder.spec.ts`
-asserts.
+Both are signed with the same local identity. Despite the distinct identifier, the
+bundled helper at `Contents/MacOS/frame-recorder` enumerated displays and recorded
+successfully, so macOS resolved the grant through the responsible process rather than the
+helper's own identity. The packaged app spawning the helper records end to end, which
+`desktop-tests/recorder.spec.ts` asserts.
+
+This is the asymmetry that shaped the whole design: the responsible-process rule that
+makes Screen Recording work for a helper is exactly what does **not** apply to input
+tapping.
 
 **The gap worth knowing.** In both tests the process tree was rooted in a terminal that
 already held Screen Recording, so the responsible process may have resolved to the
@@ -54,18 +116,21 @@ granted the process must restart before capture works. `startRecording` emits
 rather than failing opaquely, so the UI can explain the restart instead of appearing
 broken.
 
-## Two findings that contradict the documentation
+## Two findings from the helper-side tap, kept because they cost days
+
+The tap no longer lives in the helper, but both of these look exactly like a permissions
+problem and would cost the same time again.
 
 **`NSEvent.addGlobalMonitorForEvents` delivers nothing in a CLI helper.** With all three
 permissions granted and the run loop running, a global monitor recorded zero mouse moves
 and zero clicks over ten seconds. A `CGEventTap` over the same period recorded 10 clicks
 and 5057 moves. The monitor needs a real `NSApplication` event loop, which a bundled CLI
-does not have. Use `CGEventTap`.
+does not have.
 
 **An event tap needs the run loop to actually run.** Waiting out a recording with
 `Task.sleep` leaves the run loop idle and silently produces an empty cursor track, with no
-error anywhere. `RunLoop.main.run(until:)` is required. This cost a full debugging cycle
-and looks exactly like a permissions problem, which is why it is recorded here.
+error anywhere. `RunLoop.main.run(until:)` is required. The helper still pumps the run
+loop, because ScreenCaptureKit delivers through it too.
 
 ## Display scale is not always 2
 
@@ -76,9 +141,16 @@ on any non-retina display.
 
 ## Coordinate space
 
-`CGEvent.location` is already in top-left origin space, matching video pixel space once
-multiplied by the display scale. No Y-flip is needed. `NSEvent.mouseLocation` uses a
-bottom-left origin and would need flipping, which is a second reason to prefer the tap.
+libuiohook reads `CGEventGetLocation`, which is already in top-left origin space,
+matching video pixel space once multiplied by the display scale. **No Y-flip is needed.**
+`NSEvent.mouseLocation` uses a bottom-left origin and would need flipping, which is a
+second reason to prefer the tap.
+
+One loss in the move off `CGEvent.location`: libuiohook carries coordinates as `int16_t`,
+so they arrive truncated to whole points rather than as sub-point floats. The spring
+smoothing in `shared/cursor.ts` absorbs that and the redrawn cursor still moves smoothly.
+The range is nowhere near a concern, since a signed 16-bit point covers any real display
+arrangement.
 
 ## Why the grant kept going stale (found the hard way)
 

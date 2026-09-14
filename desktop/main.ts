@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeTheme, session } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  globalShortcut,
+  Menu,
+  nativeTheme,
+  session,
+  systemPreferences,
+} from 'electron';
 import type { MenuItemConstructorOptions } from 'electron';
 import { access } from 'node:fs/promises';
 import { constants, mkdirSync } from 'node:fs';
@@ -6,6 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { startDesktopRuntime } from './runtime';
 import { canvasStorageKey } from '../shared/composition';
 import type { RecordingService } from '../shared/recording';
+import { type CursorTracker, createCursorTracker } from './cursor-track';
 import { createRecorder } from './recorder-bridge';
 import { createRecordingService } from './recording-service';
 import { hideStopWindow, showStopWindow } from './stop-window';
@@ -13,6 +23,7 @@ import { selectRegion } from './region-select';
 
 const STOP_HOTKEY = 'CommandOrControl+Shift+/';
 let recorderProcess: ReturnType<typeof createRecorder> | undefined;
+let cursorTracker: CursorTracker | undefined;
 
 app.setName('Frame Studio');
 const profile = app.commandLine.getSwitchValue('user-data-dir');
@@ -77,6 +88,7 @@ else {
         globalShortcut.unregisterAll();
         hideStopWindow();
         recorderProcess?.dispose();
+        cursorTracker?.stop();
         mayQuit = true;
         app.quit();
       }
@@ -105,11 +117,27 @@ else {
     // Recording bundles live beside the canvas preferences so they survive restarts.
     const recordingsRoot = join(app.getPath('userData'), 'recordings');
     mkdirSync(recordingsRoot, { recursive: true });
+    // The cursor is tapped here rather than in the helper. macOS resolves input grants
+    // against the calling binary, and a bare executable inside Contents/MacOS is not a
+    // bundle, so the helper could never be granted one. See desktop/cursor-track.ts.
+    try {
+      const { uIOhook } = await import('uiohook-napi');
+      cursorTracker = createCursorTracker({
+        hook: uIOhook,
+        // libuiohook refuses to run without Accessibility, so that is what to check.
+        trusted: (prompt) => systemPreferences.isTrustedAccessibilityClient(prompt),
+      });
+    } catch {
+      console.warn('Screen recording is unavailable: the input hook could not be loaded.');
+    }
     let recording: RecordingService | undefined;
-    if (process.env.FRAME_RECORDER_PATH) {
+    // A recording with no cursor track is not what this feature is for, so both halves
+    // have to be present before recording is offered at all.
+    if (process.env.FRAME_RECORDER_PATH && cursorTracker) {
       recorderProcess = createRecorder(process.env.FRAME_RECORDER_PATH);
       recording = createRecordingService({
         recorder: recorderProcess,
+        cursor: cursorTracker,
         root: recordingsRoot,
         hideWindow: () => window?.hide(),
         showWindow: () => window?.show(),

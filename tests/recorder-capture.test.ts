@@ -1,10 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { bundlePaths, parseCursorTrack, parseRecordingMeta } from '../shared/recording';
+import { bundlePaths, parseRecordingMeta } from '../shared/recording';
 
 const execute = promisify(execFile);
 let binary: string;
@@ -46,8 +47,11 @@ describe.skipIf(!canCapture)('frame-recorder capture', () => {
     child.stdin.write(JSON.stringify({ cmd: 'list-displays' }) + '\n');
     const displays = (await waitFor('displays', 15_000)).displays as { id: number }[];
 
+    // The app owns the recording's t=0 and hands it over, because the cursor track is
+    // written by a different process. The helper measures videoStartOffset against it.
+    const startedAt = Date.now() / 1000;
     child.stdin.write(
-      JSON.stringify({ cmd: 'start', display: displays[0].id, out: directory }) + '\n',
+      JSON.stringify({ cmd: 'start', display: displays[0].id, out: directory, startedAt }) + '\n',
     );
     await waitFor('started', 15_000);
     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -61,13 +65,13 @@ describe.skipIf(!canCapture)('frame-recorder capture', () => {
     const meta = parseRecordingMeta(JSON.parse(await readFile(paths.meta, 'utf8')));
     expect(meta.displayScale).toBeGreaterThan(0);
     expect(meta.duration).toBeGreaterThan(0);
-    // Measured, not assumed. A hardcoded zero here is the bug this guards against.
-    expect(Number.isFinite(meta.videoStartOffset)).toBe(true);
+    // Measured, not assumed. A hardcoded zero here is the bug this guards against, and
+    // the offset is now always positive: the track opens before the stream is asked to.
+    expect(meta.videoStartOffset).toBeGreaterThan(0);
     expect(meta.displayPoints.w).toBeGreaterThan(0);
 
-    // The track may be empty if nothing moved during the run, but it must parse.
-    const track = parseCursorTrack(await readFile(paths.track, 'utf8'));
-    expect(Array.isArray(track)).toBe(true);
+    // The cursor half of a bundle is written by the app, not by the helper.
+    expect(existsSync(paths.track)).toBe(false);
 
     // The video must exist and be non trivial.
     const probe = await execute('ffprobe', [

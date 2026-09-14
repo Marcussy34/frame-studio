@@ -7,11 +7,15 @@ import type {
   RecordingService,
   WindowInfo,
 } from '../shared/recording';
+import type { CursorTracker } from './cursor-track';
 import type { Recorder } from './recorder-bridge';
 import { createRecordingController } from './recording-controller';
 
 export interface RecordingServiceDeps {
   recorder: Recorder;
+  // Records the cursor in this process. The helper cannot: input grants are keyed to
+  // the calling binary, and a bare executable is not something macOS can grant.
+  cursor: CursorTracker;
   // Directory that holds one subdirectory per recording bundle.
   root: string;
   hideWindow: () => void;
@@ -35,6 +39,7 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
 
   const controller = createRecordingController({
     recorder: deps.recorder,
+    cursor: deps.cursor,
     hideWindow: deps.hideWindow,
     showWindow: deps.showWindow,
     showStop: deps.showStop,
@@ -54,8 +59,17 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       return deps.recorder.listDisplays();
     },
 
-    permissions() {
-      return deps.recorder.permissions();
+    // The two halves of a recording answer to different grants and different processes,
+    // so the report is composed from both rather than asked of one.
+    async permissions() {
+      const { screenRecording } = await deps.recorder.permissions();
+      return { screenRecording, accessibility: deps.cursor.permitted() };
+    },
+
+    async requestCursorAccess() {
+      const accessibility = deps.cursor.requestPermission();
+      const { screenRecording } = await deps.recorder.permissions();
+      return { screenRecording, accessibility };
     },
 
     listWindows(): Promise<WindowInfo[]> {
