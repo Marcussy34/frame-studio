@@ -14,6 +14,11 @@ module.exports = {
     category: 'public.app-category.video',
     icon: '.desktop-build/icon.icns',
     identity: '-',
+    // The capture helper is signed by desktop/recorder/build.mjs with a pinned
+    // identifier. Letting electron-builder re-sign it here would replace that with a
+    // content-hash name that changes every rebuild, which makes macOS treat each build
+    // as a new program and quietly invalidates the Screen Recording grant.
+    signIgnore: ['frame-recorder$'],
     hardenedRuntime: false,
     minimumSystemVersion: media.minimumMacOS,
   },

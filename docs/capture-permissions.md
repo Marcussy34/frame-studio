@@ -68,3 +68,34 @@ on any non-retina display.
 `CGEvent.location` is already in top-left origin space, matching video pixel space once
 multiplied by the display scale. No Y-flip is needed. `NSEvent.mouseLocation` uses a
 bottom-left origin and would need flipping, which is a second reason to prefer the tap.
+
+## Why the grant kept going stale (found the hard way)
+
+The app is ad-hoc signed, which means it has no Team ID and macOS identifies it by its
+code hash. **Every rebuild produces a different hash, so every reinstall invalidates an
+existing Screen Recording grant.** The symptom is confusing: System Settings still shows
+the toggle on, because that entry points at a code identity that no longer exists, while
+the running app is treated as a different, untrusted program. Deny once at that point and
+TCC records an explicit denial, which surfaces as:
+
+```
+could not list displays: The user declined TCCs for application, window, display capture
+```
+
+Two things make this less painful:
+
+- The helper is signed with a **pinned identifier** (`com.framestudio.recorder`). By
+  default `codesign --sign -` derives the identifier from the binary's content hash, so it
+  changed on every build and added a second moving target. `electron-builder` re-signs
+  nested binaries during packaging, which clobbered the pin, so `mac.signIgnore` now tells
+  it to leave the helper alone.
+- The app identifier itself (`com.framestudio.app`) was already stable. The remaining
+  churn is the code hash, which is inherent to ad-hoc signing.
+
+**Recovering from a stale grant:** `tccutil reset ScreenCapture com.framestudio.app`
+removes every record for the app, after which the next launch prompts cleanly. Removing
+the entry in System Settings with the minus button does the same thing.
+
+**The permanent fix** is a real Developer ID certificate, which gives the app a stable
+identity across rebuilds. That is not configured here, so expect to re-grant after a
+reinstall.

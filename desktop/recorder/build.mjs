@@ -26,9 +26,17 @@ export async function buildRecorder(outDir = resolve('.desktop-build', 'bin')) {
     '-o',
     output,
   ]);
-  // Ad-hoc sign so the binary keeps a stable code identity across rebuilds, which is
-  // what lets macOS remember a permission grant instead of re-prompting every build.
-  await execute('codesign', ['--force', '--sign', '-', output]);
+  // Ad-hoc signing derives the identifier from the binary's content hash by default,
+  // so every rebuild looks like a brand new program to macOS and the Screen Recording
+  // grant goes stale. Pinning the identifier keeps it constant across rebuilds.
+  await execute('codesign', [
+    '--force',
+    '--sign',
+    '-',
+    '--identifier',
+    'com.framestudio.recorder',
+    output,
+  ]);
   return output;
 }
 
