@@ -1,0 +1,94 @@
+import { join } from 'node:path';
+import { z } from 'zod';
+
+// A recording is a directory, not a loose file. The video is meaningless without
+// the cursor track, and the track is meaningless without the metadata that says
+// how to map its coordinates onto the video.
+export const BUNDLE_VIDEO = 'video.mov';
+export const BUNDLE_TRACK = 'cursor.jsonl';
+export const BUNDLE_META = 'meta.json';
+
+export function bundlePaths(dir: string) {
+  return {
+    video: join(dir, BUNDLE_VIDEO),
+    track: join(dir, BUNDLE_TRACK),
+    meta: join(dir, BUNDLE_META),
+  };
+}
+
+// Raw event tap output, stored exactly as captured. Smoothing, motion blur and
+// the zoom curve stay derived values, so they can be retuned without re-recording.
+export const cursorEventSchema = z.object({
+  t: z.number(), // seconds since track start
+  x: z.number(), // points, top-left origin (CGEvent.location needs no flip)
+  y: z.number(),
+  e: z.enum(['m', 'd', 'u']), // move, down, up
+  b: z.number().int(), // button: 0 left, 1 right, 2 other, -1 for moves
+});
+export type CursorEvent = z.infer<typeof cursorEventSchema>;
+
+export const recordingMetaSchema = z.object({
+  version: z.literal(1),
+  // Measured per display. A hardcoded 2x is wrong on non-retina and mixed setups.
+  displayScale: z.number().positive(),
+  displayPoints: z.object({ w: z.number().positive(), h: z.number().positive() }),
+  // Measured gap between track t0 and the first video frame. Never assumed to be
+  // zero: the event tap starts fractionally before startCapture returns.
+  videoStartOffset: z.number(),
+  duration: z.number().nonnegative(),
+  createdAt: z.string(),
+});
+export type RecordingMeta = z.infer<typeof recordingMetaSchema>;
+
+export interface CursorTrack {
+  meta: RecordingMeta;
+  events: CursorEvent[];
+}
+
+export interface DisplayInfo {
+  id: number;
+  width: number;
+  height: number;
+  scale: number;
+  name: string;
+}
+
+export interface RecordingOutcome {
+  id: string;
+  frames: number;
+  samples: number;
+  clicks: number;
+  duration: number;
+  // Present only when a display change stopped the stream early.
+  interrupted?: string;
+}
+
+// Implemented by the desktop process and injected into the local API, the same way
+// preferences already are. Absent in the browser-only dev server, where screen capture
+// is not available at all.
+export interface RecordingService {
+  listDisplays(): Promise<DisplayInfo[]>;
+  start(displayID: number): Promise<{ id: string }>;
+  stop(): Promise<RecordingOutcome | null>;
+  status(): { recording: boolean; last: RecordingOutcome | null };
+}
+
+// One malformed line must never cost the user a whole recording, so bad lines are
+// skipped rather than thrown.
+export function parseCursorTrack(jsonl: string): CursorEvent[] {
+  const events: CursorEvent[] = [];
+  for (const line of jsonl.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      events.push(cursorEventSchema.parse(JSON.parse(trimmed)));
+    } catch {
+      continue;
+    }
+  }
+  return events.sort((a, b) => a.t - b.t);
+}
+
+export function parseRecordingMeta(raw: unknown): RecordingMeta {
+  return recordingMetaSchema.parse(raw);
+}
