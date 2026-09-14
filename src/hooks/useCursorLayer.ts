@@ -3,7 +3,6 @@ import type { Layout } from '../../shared/composition';
 import {
   ARROW_UNIT_HEIGHT,
   buildSprite,
-  buildZoomCurve,
   captureOriginAt,
   renderCursorFrame,
   RIPPLE_LIFE,
@@ -14,6 +13,7 @@ import {
   visibleRegion,
   zoomAt,
 } from '../../shared/cursor';
+import { zoomCurveFor } from '../../shared/zoom-plan';
 import type { MediaAsset, Settings } from '../../shared/types';
 
 interface Options {
@@ -54,16 +54,17 @@ export function useCursorLayer({ asset, settings, layout, scale, video, canvas }
       cursorHeight,
       sprite: buildSprite(cursorHeight),
       path: smoothPath(track.events, { smoothing: settings.cursorSmoothing }, asset.duration),
-      curve: buildZoomCurve(
-        track.events,
+      curve: zoomCurveFor(
+        track,
         {
           enabled: settings.zoomEnabled,
           strength: settings.zoomStrength,
           speed: settings.zoomSpeed,
         },
+        settings.zoomSource === 'plan',
         asset.duration,
-        displayScale,
-        track.meta.captureFrames,
+        { width: asset.width, height: asset.height },
+        asset.zoomPlan,
       ),
       clicks: settings.cursorClicks ? track.events.filter((event) => event.e === 'd') : [],
       samplesPerFrame: subsampleCount(settings.cursorBlur),

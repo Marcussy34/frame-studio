@@ -7,12 +7,16 @@ import { z } from 'zod';
 export const BUNDLE_VIDEO = 'video.mov';
 export const BUNDLE_TRACK = 'cursor.jsonl';
 export const BUNDLE_META = 'meta.json';
+// Optional fourth member. Absent until a recording is planned, and deletable without
+// harming the bundle, because the raw track is what everything else derives from.
+export const BUNDLE_PLAN = 'zoom-plan.json';
 
 export function bundlePaths(dir: string) {
   return {
     video: join(dir, BUNDLE_VIDEO),
     track: join(dir, BUNDLE_TRACK),
     meta: join(dir, BUNDLE_META),
+    plan: join(dir, BUNDLE_PLAN),
   };
 }
 

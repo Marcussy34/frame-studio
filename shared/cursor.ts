@@ -126,8 +126,10 @@ export interface ZoomKey {
   cy: number;
 }
 
-const ZOOM_LEAD = 0.45; // start moving in before the click lands
-const ZOOM_TAIL = 1.4; // stay in afterwards so the result is readable
+// Exported so the heuristic planner can reuse them and a planned shot feels like an
+// automatic one rather than arriving on a different rhythm.
+export const ZOOM_LEAD = 0.45; // start moving in before the click lands
+export const ZOOM_TAIL = 1.4; // stay in afterwards so the result is readable
 
 // Zoom follows attention, and clicks are the clearest signal of where attention is.
 // Between clicks the frame eases back out rather than drifting with the pointer, which
@@ -148,50 +150,86 @@ export function buildZoomCurve(
   const clicks = events.filter((event) => event.e === 'd');
   if (!clicks.length) return flat;
 
-  const dt = 1 / 60;
-  const steps = Math.max(2, Math.ceil(duration / dt));
   // A faster speed setting means a stiffer spring, so the frame settles sooner.
   const tension = 20 + (Math.max(0, Math.min(100, settings.speed)) / 100) * 45;
-  const friction = 2 * Math.sqrt(tension);
-
-  let z = 1;
-  let vz = 0;
   const originFor = (t: number) => captureOriginAt(frames, t);
   const firstOrigin = originFor(clicks[0].t);
-  let cx = (clicks[0].x - (firstOrigin?.x ?? 0)) * displayScale;
-  let cy = (clicks[0].y - (firstOrigin?.y ?? 0)) * displayScale;
+
+  const raw = integrateZoom(
+    duration,
+    (t, current) => {
+      // Every click still in its window pulls the frame toward itself.
+      let weight = 0;
+      let tx = 0;
+      let ty = 0;
+      for (const click of clicks) {
+        if (t < click.t - ZOOM_LEAD || t > click.t + ZOOM_TAIL) continue;
+        const w = 1;
+        const clickOrigin = originFor(click.t);
+        weight += w;
+        tx += (click.x - (clickOrigin?.x ?? 0)) * displayScale * w;
+        ty += (click.y - (clickOrigin?.y ?? 0)) * displayScale * w;
+      }
+      // With nothing pulling, the frame eases back out and holds where it is rather
+      // than drifting with the pointer, which is far less nauseating to watch.
+      return weight > 0
+        ? { z: settings.strength, x: tx / weight, y: ty / weight, tension }
+        : { z: 1, x: current.cx, y: current.cy, tension };
+    },
+    {
+      cx: (clicks[0].x - (firstOrigin?.x ?? 0)) * displayScale,
+      cy: (clicks[0].y - (firstOrigin?.y ?? 0)) * displayScale,
+    },
+  );
+  return simplifyCurve(raw);
+}
+
+// Where the frame is being pulled at one instant, and how hard.
+export interface ZoomTarget {
+  z: number;
+  x: number;
+  y: number;
+  tension: number;
+}
+
+// The spring that turns a series of targets into camera motion, shared by the automatic
+// zoom above and the planned zoom in shared/zoom-plan.ts. One integrator means a planned
+// move feels like an automatic one, and means the preview and the export cannot end up
+// disagreeing about the physics.
+//
+// Returns raw points at a fixed 60Hz. Callers simplify, because how aggressively to
+// thin the curve is their decision, not the spring's.
+export function integrateZoom(
+  duration: number,
+  target: (t: number, current: ZoomKey) => ZoomTarget,
+  origin: { cx: number; cy: number } = { cx: 0, cy: 0 },
+): ZoomKey[] {
+  const dt = 1 / 60;
+  const steps = Math.max(2, Math.ceil(duration / dt));
+  let z = 1;
+  let vz = 0;
+  let cx = origin.cx;
+  let cy = origin.cy;
   let vcx = 0;
   let vcy = 0;
   const raw: ZoomKey[] = [];
 
   for (let i = 0; i < steps; i++) {
     const t = i * dt;
-    // Every click still in its window pulls the frame toward itself.
-    let weight = 0;
-    let tx = 0;
-    let ty = 0;
-    for (const click of clicks) {
-      if (t < click.t - ZOOM_LEAD || t > click.t + ZOOM_TAIL) continue;
-      const w = 1;
-      const clickOrigin = originFor(click.t);
-      weight += w;
-      tx += (click.x - (clickOrigin?.x ?? 0)) * displayScale * w;
-      ty += (click.y - (clickOrigin?.y ?? 0)) * displayScale * w;
-    }
-    const targetZ = weight > 0 ? settings.strength : 1;
-    const targetX = weight > 0 ? tx / weight : cx;
-    const targetY = weight > 0 ? ty / weight : cy;
+    const want = target(t, { t, z, cx, cy });
+    // Critically damped, so the frame settles onto its target instead of bouncing.
+    const friction = 2 * Math.sqrt(want.tension);
 
-    vz += ((-tension * (z - targetZ) - friction * vz) / 1) * dt;
+    vz += (-want.tension * (z - want.z) - friction * vz) * dt;
     z += vz * dt;
-    vcx += ((-tension * (cx - targetX) - friction * vcx) / 1) * dt;
+    vcx += (-want.tension * (cx - want.x) - friction * vcx) * dt;
     cx += vcx * dt;
-    vcy += ((-tension * (cy - targetY) - friction * vcy) / 1) * dt;
+    vcy += (-want.tension * (cy - want.y) - friction * vcy) * dt;
     cy += vcy * dt;
 
     raw.push({ t, z: Math.max(1, z), cx, cy });
   }
-  return simplifyCurve(raw);
+  return raw;
 }
 
 // Keeps the expression handed to FFmpeg small. The curve is mostly flat between

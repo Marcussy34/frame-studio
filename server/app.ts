@@ -14,6 +14,7 @@ import {
   type RecordingService,
 } from '../shared/recording';
 import type { Job, MediaAsset, PreferencesStore } from '../shared/types';
+import { zoomPlanSchema } from '../shared/zoom-plan';
 import { deleteRecording, listRecordings } from './recordings';
 import { preparePreview, probeVideo, renderVideo } from './media';
 
@@ -274,6 +275,14 @@ export async function createApp({
       res.status(404).json({ error: 'That recording could not be opened.' });
       return;
     }
+    // Optional, and a damaged one must never cost someone their recording, so a plan
+    // that will not parse is simply treated as absent.
+    let zoomPlan;
+    try {
+      zoomPlan = zoomPlanSchema.parse(JSON.parse(await readFile(paths.plan, 'utf8')));
+    } catch {
+      zoomPlan = undefined;
+    }
     if (active || closing) {
       res.status(409).json({ error: 'Finish or cancel the current video job first.' });
       return;
@@ -298,6 +307,7 @@ export async function createApp({
           size: bytes,
           previewUrl: `/api/media/${assetId}`,
           cursorTrack: { meta, events },
+          zoomPlan,
         };
         const previous = current;
         current = { asset, source, preview };
@@ -366,6 +376,7 @@ export async function createApp({
         },
         // Only recordings carry a cursor track; imported video renders as before.
         source.asset.cursorTrack,
+        source.asset.zoomPlan,
       );
       record.job.downloadUrl = `/api/download/${record.job.id}`;
       record.job.filename = `${stem}-framed.mp4`;

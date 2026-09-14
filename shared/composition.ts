@@ -101,6 +101,10 @@ export const settingsSchema = z.object({
   zoomEnabled: z.boolean().default(true),
   zoomStrength: z.number().finite().min(1).max(3).default(1.8),
   zoomSpeed: z.number().finite().min(0).max(100).default(55),
+  // Where the camera comes from. 'auto' is the click-driven zoom; 'plan' uses the
+  // recording's stored shot plan. A recording with no plan falls back to 'auto', so
+  // this can never leave someone with no camera at all.
+  zoomSource: z.enum(['auto', 'plan']).default('auto'),
 });
 
 export const exportSchema = z.object({
@@ -132,6 +136,7 @@ export const defaultSettings: Settings = {
   zoomEnabled: true,
   zoomStrength: 1.8,
   zoomSpeed: 55,
+  zoomSource: 'auto',
 };
 
 export interface Layout {

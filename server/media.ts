@@ -6,7 +6,6 @@ import { backgroundSvg, getLayout, maskSvg } from '../shared/composition';
 import {
   ARROW_UNIT_HEIGHT,
   buildSprite,
-  buildZoomCurve,
   captureOriginAt,
   toCapturePixels,
   renderCursorFrame,
@@ -19,6 +18,7 @@ import {
   zoomExpressions,
 } from '../shared/cursor';
 import type { CursorTrack } from '../shared/recording';
+import { zoomCurveFor, type ZoomPlan } from '../shared/zoom-plan';
 import type { ExportOptions, VideoMetadata } from '../shared/types';
 
 type Progress = (progress: number) => void;
@@ -242,6 +242,10 @@ async function writeCursorLayer(
     sourceWidth: number;
     sourceHeight: number;
     signal: AbortSignal;
+    // Drawn against the same camera as the video underneath it. Rebuilding the
+    // automatic curve here instead would put the cursor in the wrong place on every
+    // frame of a planned recording.
+    plan?: ZoomPlan;
   },
 ): Promise<void> {
   const { track, settings, layout, duration, fps, sourceWidth, sourceHeight, signal } = options;
@@ -251,12 +255,13 @@ async function writeCursorLayer(
   const baseHeight = ARROW_UNIT_HEIGHT * scale * (layout.video.width / sourceWidth);
   const sprite = buildSprite(baseHeight * settings.cursorSize);
   const path = smoothPath(track.events, { smoothing: settings.cursorSmoothing }, duration);
-  const curve = buildZoomCurve(
-    track.events,
+  const curve = zoomCurveFor(
+    track,
     { enabled: settings.zoomEnabled, strength: settings.zoomStrength, speed: settings.zoomSpeed },
+    settings.zoomSource === 'plan',
     duration,
-    scale,
-    track.meta.captureFrames,
+    { width: sourceWidth, height: sourceHeight },
+    options.plan,
   );
   const samplesPerFrame = subsampleCount(settings.cursorBlur);
   const clicks = settings.cursorClicks ? track.events.filter((event) => event.e === 'd') : [];
@@ -316,6 +321,8 @@ export async function renderVideo(
   progress: Progress,
   // Present only for assets that came from a Frame Studio recording.
   track?: CursorTrack,
+  // Present only once that recording has been planned. Absent means automatic zoom.
+  plan?: ZoomPlan,
 ): Promise<void> {
   signal.throwIfAborted();
   const layout = getLayout(options.settings, meta, options.resolution);
@@ -341,16 +348,17 @@ export async function renderVideo(
     const zoom =
       track && options.settings.zoomEnabled
         ? (() => {
-            const curve = buildZoomCurve(
-              track.events,
+            const curve = zoomCurveFor(
+              track,
               {
                 enabled: true,
                 strength: options.settings.zoomStrength,
                 speed: options.settings.zoomSpeed,
               },
+              options.settings.zoomSource === 'plan',
               meta.duration,
-              track.meta.displayScale,
-              track.meta.captureFrames,
+              { width: meta.width, height: meta.height },
+              plan,
             );
             const expressions = zoomExpressions(curve, meta.width, meta.height, meta.fps);
             return `zoompan=z='${expressions.z}':x='${expressions.x}':y='${expressions.y}':d=1:s=${meta.width}x${meta.height}:fps=${meta.fps},`;
@@ -420,6 +428,7 @@ export async function renderVideo(
               sourceWidth: meta.width,
               sourceHeight: meta.height,
               signal,
+              plan,
             })
         : undefined,
     );
