@@ -1,6 +1,11 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { DisplayInfo, RecordingOutcome, RecordingService } from '../shared/recording';
+import type {
+  DisplayInfo,
+  RecordingOutcome,
+  RecordingService,
+  WindowInfo,
+} from '../shared/recording';
 import type { Recorder } from './recorder-bridge';
 import { createRecordingController } from './recording-controller';
 
@@ -47,13 +52,17 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       return deps.recorder.listDisplays();
     },
 
-    async start(displayID: number) {
+    listWindows(): Promise<WindowInfo[]> {
+      return deps.recorder.listWindows();
+    },
+
+    async start(target: { displayID?: number; windowID?: number }) {
       const id = newBundleId();
       const outDir = join(deps.root, id);
       await mkdir(outDir, { recursive: true });
       currentId = id;
       try {
-        await controller.start({ displayID, outDir });
+        await controller.start({ ...target, outDir });
       } catch (error) {
         currentId = null;
         throw error;

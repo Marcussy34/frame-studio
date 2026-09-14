@@ -403,16 +403,34 @@ export async function createApp({
     }
   });
 
+  app.get('/api/windows', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json({ windows: await service.listWindows() });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/recording/start', async (req, res) => {
     const service = requireRecording(res);
     if (!service) return;
-    const displayID = Number((req.body as { displayID?: unknown } | undefined)?.displayID);
-    if (!Number.isFinite(displayID)) {
-      res.status(400).json({ error: 'Choose a display before recording.' });
+    const body = req.body as { displayID?: unknown; windowID?: unknown } | undefined;
+    const displayID = Number(body?.displayID);
+    const windowID = Number(body?.windowID);
+    // Exactly one target, so an ambiguous request is rejected rather than guessed at.
+    const target = Number.isFinite(windowID)
+      ? { windowID }
+      : Number.isFinite(displayID)
+        ? { displayID }
+        : null;
+    if (!target) {
+      res.status(400).json({ error: 'Choose a display or a window before recording.' });
       return;
     }
     try {
-      res.json(await service.start(displayID));
+      res.json(await service.start(target));
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
     }

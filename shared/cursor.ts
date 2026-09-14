@@ -6,7 +6,7 @@
 // Nothing here is stored. Everything is derived from the raw ~500Hz event track plus
 // the user's settings, so any parameter can be retuned without re-recording.
 
-import type { CursorEvent } from './recording';
+import type { CaptureFrame, CursorEvent } from './recording';
 
 export interface CursorSettings {
   enabled: boolean;
@@ -136,9 +136,11 @@ export function buildZoomCurve(
   events: CursorEvent[],
   settings: ZoomSettings,
   duration: number,
-  // Events are in capture points; the visible region is in source pixels. Convert at
-  // this boundary so every zoom coordinate downstream is in pixels.
+  // Events are global capture points; the visible region is in source pixels. Convert
+  // at this boundary so every zoom coordinate downstream is in pixels.
   displayScale: number,
+  // Capture origin series, so a window recording anchors zoom inside the window.
+  frames: CaptureFrame[] = [],
 ): ZoomKey[] {
   const flat: ZoomKey[] = [{ t: 0, z: 1, cx: 0, cy: 0 }];
   if (!settings.enabled || settings.strength <= 1 || !events.length) return flat;
@@ -154,8 +156,10 @@ export function buildZoomCurve(
 
   let z = 1;
   let vz = 0;
-  let cx = clicks[0].x * displayScale;
-  let cy = clicks[0].y * displayScale;
+  const originFor = (t: number) => captureOriginAt(frames, t);
+  const firstOrigin = originFor(clicks[0].t);
+  let cx = (clicks[0].x - (firstOrigin?.x ?? 0)) * displayScale;
+  let cy = (clicks[0].y - (firstOrigin?.y ?? 0)) * displayScale;
   let vcx = 0;
   let vcy = 0;
   const raw: ZoomKey[] = [];
@@ -169,9 +173,10 @@ export function buildZoomCurve(
     for (const click of clicks) {
       if (t < click.t - ZOOM_LEAD || t > click.t + ZOOM_TAIL) continue;
       const w = 1;
+      const clickOrigin = originFor(click.t);
       weight += w;
-      tx += click.x * displayScale * w;
-      ty += click.y * displayScale * w;
+      tx += (click.x - (clickOrigin?.x ?? 0)) * displayScale * w;
+      ty += (click.y - (clickOrigin?.y ?? 0)) * displayScale * w;
     }
     const targetZ = weight > 0 ? settings.strength : 1;
     const targetX = weight > 0 ? tx / weight : cx;
@@ -259,15 +264,63 @@ export function visibleRegion(
   };
 }
 
+// Where the capture sat in global screen space at a given moment. A window can be
+// dragged mid-recording, so this is a series rather than a constant.
+export function captureOriginAt(frames: CaptureFrame[], t: number): CaptureFrame | null {
+  if (!frames.length) return null;
+  if (t <= frames[0].t) return frames[0];
+  const last = frames[frames.length - 1];
+  if (t >= last.t) return last;
+  let low = 0;
+  let high = frames.length - 1;
+  while (high - low > 1) {
+    const mid = (low + high) >> 1;
+    if (frames[mid].t <= t) low = mid;
+    else high = mid;
+  }
+  const a = frames[low];
+  const b = frames[low + 1];
+  const f = (t - a.t) / (b.t - a.t || 1);
+  // Interpolated so a dragged window does not make the cursor jump between samples.
+  return {
+    t,
+    x: a.x + (b.x - a.x) * f,
+    y: a.y + (b.y - a.y) * f,
+    w: a.w + (b.w - a.w) * f,
+    h: a.h + (b.h - a.h) * f,
+  };
+}
+
+// Global cursor point to a pixel inside the captured frame. Returns null when the
+// pointer was outside the capture, which happens constantly when recording a single
+// window: drawing it clamped to the edge would show a cursor that was never there.
+export function toCapturePixels(
+  point: Point,
+  origin: CaptureFrame | null,
+  displayScale: number,
+  sourceWidth: number,
+  sourceHeight: number,
+): Point | null {
+  const x = (point.x - (origin?.x ?? 0)) * displayScale;
+  const y = (point.y - (origin?.y ?? 0)) * displayScale;
+  // A small margin keeps a cursor hugging the edge from flickering out.
+  const margin = 2;
+  if (x < -margin || y < -margin || x > sourceWidth + margin || y > sourceHeight + margin) {
+    return null;
+  }
+  return { x, y };
+}
+
 // Source point, in capture points, to a pixel in the composed canvas.
 export function sourceToCanvas(
   point: Point,
   region: Rect,
   video: Rect,
   displayScale: number,
+  origin?: CaptureFrame | null,
 ): Point {
-  const px = point.x * displayScale;
-  const py = point.y * displayScale;
+  const px = (point.x - (origin?.x ?? 0)) * displayScale;
+  const py = (point.y - (origin?.y ?? 0)) * displayScale;
   return {
     x: video.x + ((px - region.x) / region.width) * video.width,
     y: video.y + ((py - region.y) / region.height) * video.height,

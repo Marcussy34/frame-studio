@@ -234,11 +234,19 @@ final class RecordingSession {
     let scale: Double
     let pointsWidth: Int
     let pointsHeight: Int
+    let kind: String
+    let title: String
+    // Sampled window position. Cursor events are global, so a window that moves during
+    // a recording needs its origin tracked or the redrawn cursor drifts away from it.
+    let window: SCWindow?
+    var frames: [[String: Any]] = []
+    private var lastSampled: CGRect = .null
 
     init(
         stream: SCStream, sink: SinkOutput, recorder: CursorRecorder,
         interruption: Interruption, outDir: String, scale: Double,
-        pointsWidth: Int, pointsHeight: Int
+        pointsWidth: Int, pointsHeight: Int, kind: String, title: String,
+        window: SCWindow?, origin: CGRect
     ) {
         self.stream = stream
         self.sink = sink
@@ -248,10 +256,45 @@ final class RecordingSession {
         self.scale = scale
         self.pointsWidth = pointsWidth
         self.pointsHeight = pointsHeight
+        self.kind = kind
+        self.title = title
+        self.window = window
+        self.lastSampled = origin
+        self.frames = [
+            ["t": 0.0, "x": origin.origin.x, "y": origin.origin.y,
+             "w": origin.width, "h": origin.height]
+        ]
+    }
+
+    // Only records a sample when the frame actually moved, so a window left alone
+    // costs a single entry rather than thousands.
+    func sampleWindowFrame() async {
+        guard kind == "window", let window else { return }
+        guard
+            let content = try? await SCShareableContent.excludingDesktopWindows(
+                true, onScreenWindowsOnly: false),
+            let live = content.windows.first(where: { $0.windowID == window.windowID })
+        else { return }
+        let frame = live.frame
+        if abs(frame.origin.x - lastSampled.origin.x) < 1
+            && abs(frame.origin.y - lastSampled.origin.y) < 1
+            && abs(frame.width - lastSampled.width) < 1
+            && abs(frame.height - lastSampled.height) < 1
+        {
+            return
+        }
+        lastSampled = frame
+        frames.append([
+            "t": CFAbsoluteTimeGetCurrent() - recorder.startedAt,
+            "x": frame.origin.x, "y": frame.origin.y,
+            "w": frame.width, "h": frame.height,
+        ])
     }
 }
 
-func startRecording(displayID: CGDirectDisplayID, outDir: String) async -> RecordingSession? {
+func startRecording(
+    displayID: CGDirectDisplayID?, windowID: CGWindowID?, outDir: String
+) async -> RecordingSession? {
     guard CGPreflightScreenCaptureAccess() else {
         _ = CGRequestScreenCaptureAccess()
         emit([
@@ -265,11 +308,51 @@ func startRecording(displayID: CGDirectDisplayID, outDir: String) async -> Recor
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
-            emitError("display \(displayID) not found")
-            return nil
+
+        var scale = 2.0
+        var pointsWidth = 0
+        var pointsHeight = 0
+        var kind = "display"
+        var title = ""
+        var window: SCWindow?
+        var origin = CGRect.zero
+        let filter: SCContentFilter
+
+        if let windowID {
+            guard let match = content.windows.first(where: { $0.windowID == windowID }) else {
+                emitError("window \(windowID) not found")
+                return nil
+            }
+            window = match
+            kind = "window"
+            title = match.title ?? ""
+            origin = match.frame
+            pointsWidth = Int(match.frame.width)
+            pointsHeight = Int(match.frame.height)
+            // A window can straddle displays, so take the scale of the one it sits on.
+            scale = Double(
+                NSScreen.screens.first { $0.frame.intersects(match.frame) }?.backingScaleFactor
+                    ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+            filter = SCContentFilter(desktopIndependentWindow: match)
+        } else {
+            guard let displayID,
+                let display = content.displays.first(where: { $0.displayID == displayID })
+            else {
+                emitError("display not found")
+                return nil
+            }
+            scale = scaleFor(displayID: displayID)
+            pointsWidth = display.width
+            pointsHeight = display.height
+            // A display capture starts at the screen origin, which is not always zero
+            // on a multi display setup.
+            let screen = screenFor(displayID: displayID)
+            origin = screen?.frame ?? CGRect(x: 0, y: 0, width: display.width, height: display.height)
+            origin = CGRect(
+                x: origin.origin.x, y: origin.origin.y,
+                width: CGFloat(display.width), height: CGFloat(display.height))
+            filter = SCContentFilter(display: display, excludingWindows: [])
         }
-        let scale = scaleFor(displayID: displayID)
 
         try FileManager.default.createDirectory(
             atPath: outDir, withIntermediateDirectories: true)
@@ -279,14 +362,13 @@ func startRecording(displayID: CGDirectDisplayID, outDir: String) async -> Recor
         let config = SCStreamConfiguration()
         // THE CORE SWITCH. Omit the cursor so it can be redrawn in post from the track.
         config.showsCursor = false
-        config.width = Int(Double(display.width) * scale)
-        config.height = Int(Double(display.height) * scale)
+        config.width = Int(Double(pointsWidth) * scale)
+        config.height = Int(Double(pointsHeight) * scale)
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.capturesAudio = false
         config.queueDepth = 8
 
         let interruption = Interruption()
-        let filter = SCContentFilter(display: display, excludingWindows: [])
         let stream = SCStream(
             filter: filter, configuration: config,
             delegate: StreamDelegate(interruption: interruption))
@@ -311,7 +393,8 @@ func startRecording(displayID: CGDirectDisplayID, outDir: String) async -> Recor
         return RecordingSession(
             stream: stream, sink: sink, recorder: recorder, interruption: interruption,
             outDir: outDir, scale: scale,
-            pointsWidth: display.width, pointsHeight: display.height)
+            pointsWidth: pointsWidth, pointsHeight: pointsHeight,
+            kind: kind, title: title, window: window, origin: origin)
     } catch {
         emitError("could not start recording: \(error.localizedDescription)")
         return nil
@@ -339,6 +422,9 @@ func finishRecording(_ session: RecordingSession) async {
 
         var meta: [String: Any] = [
             "version": 1,
+            "captureKind": session.kind,
+            "captureTitle": session.title,
+            "captureFrames": session.frames,
             "displayScale": session.scale,
             "displayPoints": ["w": session.pointsWidth, "h": session.pointsHeight],
             "videoStartOffset": offset,
@@ -406,6 +492,7 @@ Thread.detachNewThread {
 
 var session: RecordingSession?
 var running = true
+var sampleTicks = 0
 
 while running {
     // Pumping the run loop is what lets the event tap deliver. Never replace this
@@ -416,19 +503,27 @@ while running {
         switch command["cmd"] as? String {
         case "list-displays":
             await listDisplays()
+        case "list-windows":
+            await listWindows()
         case "start":
             guard session == nil else {
                 emitError("already recording")
                 break
             }
-            guard let displayID = command["display"] as? Int,
-                let outDir = command["out"] as? String
-            else {
-                emitError("start needs display and out")
+            guard let outDir = command["out"] as? String else {
+                emitError("start needs out")
+                break
+            }
+            let displayID = command["display"] as? Int
+            let windowID = command["window"] as? Int
+            guard displayID != nil || windowID != nil else {
+                emitError("start needs display or window")
                 break
             }
             session = await startRecording(
-                displayID: CGDirectDisplayID(displayID), outDir: outDir)
+                displayID: displayID.map { CGDirectDisplayID($0) },
+                windowID: windowID.map { CGWindowID($0) },
+                outDir: outDir)
         case "stop":
             guard let active = session else {
                 emitError("not recording")
@@ -443,6 +538,12 @@ while running {
         }
     }
 
+    // Track where the window is so the redrawn cursor keeps landing in the right place.
+    if let active = session, active.kind == "window" {
+        sampleTicks += 1
+        if sampleTicks % 3 == 0 { await active.sampleWindowFrame() }
+    }
+
     // A display change stops the stream from underneath us. Finalise what we have.
     if let active = session, active.interruption.reason != nil {
         session = nil
@@ -455,6 +556,46 @@ while running {
             await finishRecording(active)
         }
         running = false
+    }
+}
+
+// Only windows a person could plausibly want to record: on screen, titled, and big
+// enough to be a real window rather than a shadow or a menu.
+func listWindows() async {
+    do {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            true, onScreenWindowsOnly: true)
+        let windows: [[String: Any]] = content.windows
+            .filter { window in
+                guard window.isOnScreen else { return false }
+                guard let title = window.title, !title.isEmpty else { return false }
+                guard window.frame.width >= 200 && window.frame.height >= 120 else { return false }
+                // System chrome is on screen and titled but is never what someone means
+                // by "record this window".
+                let systemOwners: Set<String> = [
+                    "com.apple.dock", "com.apple.WindowManager", "com.apple.controlcenter",
+                    "com.apple.notificationcenterui", "com.apple.systemuiserver",
+                    "com.apple.Spotlight", "com.apple.wallpaper.agent",
+                ]
+                let bundle = window.owningApplication?.bundleIdentifier ?? ""
+                return !systemOwners.contains(bundle)
+            }
+            .sorted {
+                ($0.owningApplication?.applicationName ?? "")
+                    < ($1.owningApplication?.applicationName ?? "")
+            }
+            .map { window in
+                [
+                    "id": Int(window.windowID),
+                    "title": window.title ?? "",
+                    "app": window.owningApplication?.applicationName ?? "",
+                    "width": Int(window.frame.width),
+                    "height": Int(window.frame.height),
+                ]
+            }
+        emit(["event": "windows", "windows": windows])
+    } catch {
+        emitError("could not list windows: \(error.localizedDescription)")
     }
 }
 

@@ -81,3 +81,34 @@ test('recording produces a bundle that loads into the editor', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('the picker can switch to recording a single window', async () => {
+  expect(existsSync(binary)).toBe(true);
+  const directory = await mkdtemp(join(tmpdir(), 'frame-desktop-window-pick-'));
+  const application = await electron.launch({
+    executablePath: binary,
+    args: [`--user-data-dir=${join(directory, 'profile')}`],
+    env: { ...process.env, PATH: '/usr/bin:/bin', TMPDIR: directory },
+  });
+  try {
+    const page = await application.firstWindow();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+
+    await page.getByRole('button', { name: 'Record screen', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Record your screen' })).toBeVisible();
+    await page.getByRole('button', { name: 'Window', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Window', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // Frame Studio is itself an open window, so the list can never be empty here.
+    await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled({
+      timeout: 30_000,
+    });
+    expect(errors).toEqual([]);
+  } finally {
+    await application.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

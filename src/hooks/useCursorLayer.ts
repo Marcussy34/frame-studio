@@ -4,11 +4,13 @@ import {
   ARROW_UNIT_HEIGHT,
   buildSprite,
   buildZoomCurve,
+  captureOriginAt,
   renderCursorFrame,
   RIPPLE_LIFE,
   smoothPath,
   sourceToCanvas,
   subsampleCount,
+  toCapturePixels,
   visibleRegion,
   zoomAt,
 } from '../../shared/cursor';
@@ -61,6 +63,7 @@ export function useCursorLayer({ asset, settings, layout, scale, video, canvas }
         },
         asset.duration,
         displayScale,
+        track.meta.captureFrames,
       ),
       clicks: settings.cursorClicks ? track.events.filter((event) => event.e === 'd') : [],
       samplesPerFrame: subsampleCount(settings.cursorBlur),
@@ -109,39 +112,61 @@ export function useCursorLayer({ asset, settings, layout, scale, video, canvas }
 
       buffer.fill(0);
       const fps = 60;
+      const frames = track.meta.captureFrames;
       const samples = [];
       for (let sub = 0; sub < model.samplesPerFrame; sub++) {
         const sampleTime = t + ((sub + 0.5) / model.samplesPerFrame - 0.5) / fps;
+        const origin = captureOriginAt(frames, sampleTime);
+        const point = model.path.at(sampleTime);
+        // Not drawn while the pointer is outside the capture, which happens constantly
+        // when recording a single window.
+        if (!toCapturePixels(point, origin, model.displayScale, asset.width, asset.height)) {
+          continue;
+        }
         const sampleRegion = visibleRegion(
           zoomAt(model.curve, sampleTime),
           asset.width,
           asset.height,
         );
         samples.push(
-          sourceToCanvas(
-            model.path.at(sampleTime),
-            sampleRegion,
-            model.videoRect,
-            model.displayScale,
-          ),
+          sourceToCanvas(point, sampleRegion, model.videoRect, model.displayScale, origin),
         );
       }
+      const midOrigin = captureOriginAt(frames, t);
       const ripples = model.clicks
         .filter((click) => t - click.t >= 0 && t - click.t <= RIPPLE_LIFE)
+        .filter(
+          (click) =>
+            !!toCapturePixels(
+              click,
+              captureOriginAt(frames, click.t),
+              model.displayScale,
+              asset.width,
+              asset.height,
+            ),
+        )
         .map((click) => {
-          const point = sourceToCanvas(click, region, model.videoRect, model.displayScale);
+          const point = sourceToCanvas(
+            click,
+            region,
+            model.videoRect,
+            model.displayScale,
+            midOrigin,
+          );
           return { x: point.x, y: point.y, age: t - click.t };
         });
 
-      renderCursorFrame({
-        out: buffer,
-        width,
-        height,
-        sprite: model.sprite,
-        samples,
-        ripples,
-        cursorHeight: model.cursorHeight,
-      });
+      if (samples.length || ripples.length) {
+        renderCursorFrame({
+          out: buffer,
+          width,
+          height,
+          sprite: model.sprite,
+          samples: samples.length ? samples : [{ x: -1e6, y: -1e6 }],
+          ripples,
+          cursorHeight: model.cursorHeight,
+        });
+      }
       context.putImageData(new ImageData(buffer, width, height), 0, 0);
     };
 

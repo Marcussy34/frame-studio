@@ -49,6 +49,9 @@ function centredTrack(): CursorTrack {
   return {
     meta: {
       version: 1,
+      captureKind: 'display' as const,
+      captureTitle: '',
+      captureFrames: [],
       displayScale: 2, // 1920x1080 pixels is 960x540 points
       displayPoints: { w: 960, h: 540 },
       videoStartOffset: 0,

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSprite,
   buildZoomCurve,
+  captureOriginAt,
+  toCapturePixels,
   piecewiseExpression,
   renderCursorFrame,
   RIPPLE_LIFE,
@@ -262,5 +264,56 @@ describe('zoomExpressions', () => {
     expect(expressions.z.length).toBeGreaterThan(0);
     // The curve is simplified, so the expression must stay a manageable size.
     expect(expressions.z.length).toBeLessThan(60_000);
+  });
+});
+
+describe('captureOriginAt', () => {
+  const frames = [
+    { t: 0, x: 100, y: 200, w: 800, h: 600 },
+    { t: 2, x: 300, y: 200, w: 800, h: 600 },
+  ];
+
+  it('returns null when a recording has no capture frames', () => {
+    expect(captureOriginAt([], 1)).toBeNull();
+  });
+
+  it('holds the first and last samples outside the range', () => {
+    expect(captureOriginAt(frames, -5)?.x).toBe(100);
+    expect(captureOriginAt(frames, 99)?.x).toBe(300);
+  });
+
+  it('interpolates, so dragging a window does not make the cursor jump', () => {
+    expect(captureOriginAt(frames, 1)?.x).toBeCloseTo(200, 5);
+  });
+});
+
+describe('toCapturePixels', () => {
+  const origin = { t: 0, x: 100, y: 50, w: 800, h: 600 };
+
+  it('makes a global point relative to the captured window', () => {
+    // 150 points is 50 past the window origin, doubled by the display scale.
+    expect(toCapturePixels({ x: 150, y: 100 }, origin, 2, 1600, 1200)).toEqual({
+      x: 100,
+      y: 100,
+    });
+  });
+
+  it('returns null outside the capture, so the cursor is hidden rather than clamped', () => {
+    expect(toCapturePixels({ x: 20, y: 100 }, origin, 2, 1600, 1200)).toBeNull();
+    expect(toCapturePixels({ x: 5000, y: 100 }, origin, 2, 1600, 1200)).toBeNull();
+  });
+
+  it('treats a missing origin as the screen origin, which is the full screen case', () => {
+    expect(toCapturePixels({ x: 10, y: 20 }, null, 2, 1600, 1200)).toEqual({ x: 20, y: 40 });
+  });
+});
+
+describe('buildZoomCurve with a moving window', () => {
+  it('anchors zoom inside the window rather than in global screen space', () => {
+    const events: CursorEvent[] = [{ t: 1, x: 500, y: 400, e: 'd', b: 0 }];
+    const frames = [{ t: 0, x: 400, y: 300, w: 800, h: 600 }];
+    const curve = buildZoomCurve(events, { enabled: true, strength: 2, speed: 90 }, 3, 2, frames);
+    // The click is 100 points inside the window, so 200 pixels in, not 1000.
+    expect(zoomAt(curve, 1.4).cx).toBeLessThan(600);
   });
 });

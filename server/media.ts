@@ -7,6 +7,8 @@ import {
   ARROW_UNIT_HEIGHT,
   buildSprite,
   buildZoomCurve,
+  captureOriginAt,
+  toCapturePixels,
   renderCursorFrame,
   RIPPLE_LIFE,
   smoothPath,
@@ -254,6 +256,7 @@ async function writeCursorLayer(
     { enabled: settings.zoomEnabled, strength: settings.zoomStrength, speed: settings.zoomSpeed },
     duration,
     scale,
+    track.meta.captureFrames,
   );
   const samplesPerFrame = subsampleCount(settings.cursorBlur);
   const clicks = settings.cursorClicks ? track.events.filter((event) => event.e === 'd') : [];
@@ -266,26 +269,38 @@ async function writeCursorLayer(
     const positions = [];
     for (let sub = 0; sub < samplesPerFrame; sub++) {
       const t = (index + (sub + 0.5) / samplesPerFrame) / fps + offset;
+      const origin = captureOriginAt(track.meta.captureFrames, t);
+      const point = path.at(t);
+      // Outside the capture the cursor is simply not drawn, which matters constantly
+      // when recording a single window.
+      if (!toCapturePixels(point, origin, scale, sourceWidth, sourceHeight)) continue;
       const region = visibleRegion(zoomAt(curve, t), sourceWidth, sourceHeight);
-      positions.push(sourceToCanvas(path.at(t), region, layout.video, scale));
+      positions.push(sourceToCanvas(point, region, layout.video, scale, origin));
     }
     const midpoint = (index + 0.5) / fps + offset;
+    const midOrigin = captureOriginAt(track.meta.captureFrames, midpoint);
     const region = visibleRegion(zoomAt(curve, midpoint), sourceWidth, sourceHeight);
     const ripples = clicks
       .filter((click) => midpoint - click.t >= 0 && midpoint - click.t <= RIPPLE_LIFE)
+      .filter((click) => {
+        const origin = captureOriginAt(track.meta.captureFrames, click.t);
+        return !!toCapturePixels(click, origin, scale, sourceWidth, sourceHeight);
+      })
       .map((click) => {
-        const point = sourceToCanvas(click, region, layout.video, scale);
+        const point = sourceToCanvas(click, region, layout.video, scale, midOrigin);
         return { x: point.x, y: point.y, age: midpoint - click.t };
       });
-    renderCursorFrame({
-      out: frame,
-      width: layout.width,
-      height: layout.height,
-      sprite,
-      samples: positions,
-      ripples,
-      cursorHeight: baseHeight * settings.cursorSize,
-    });
+    if (positions.length || ripples.length) {
+      renderCursorFrame({
+        out: frame,
+        width: layout.width,
+        height: layout.height,
+        sprite,
+        samples: positions.length ? positions : [{ x: -1e6, y: -1e6 }],
+        ripples,
+        cursorHeight: baseHeight * settings.cursorSize,
+      });
+    }
     if (!stream.write(Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength))) {
       await new Promise((resolve) => stream.once('drain', resolve));
     }
@@ -335,6 +350,7 @@ export async function renderVideo(
               },
               meta.duration,
               track.meta.displayScale,
+              track.meta.captureFrames,
             );
             const expressions = zoomExpressions(curve, meta.width, meta.height, meta.fps);
             return `zoompan=z='${expressions.z}':x='${expressions.x}':y='${expressions.y}':d=1:s=${meta.width}x${meta.height}:fps=${meta.fps},`;

@@ -27,8 +27,25 @@ export const cursorEventSchema = z.object({
 });
 export type CursorEvent = z.infer<typeof cursorEventSchema>;
 
+// Where the captured pixels sit in global screen space, sampled over time because a
+// window can be moved mid-recording. Cursor events are global, so without this the
+// cursor lands hundreds of pixels away from where it actually was.
+export const captureFrameSchema = z.object({
+  t: z.number(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+});
+export type CaptureFrame = z.infer<typeof captureFrameSchema>;
+
 export const recordingMetaSchema = z.object({
   version: z.literal(1),
+  // Defaults keep bundles recorded before window capture existing loading unchanged.
+  captureKind: z.enum(['display', 'window']).default('display'),
+  captureTitle: z.string().default(''),
+  // Only written when it changes, so a window that never moves costs one entry.
+  captureFrames: z.array(captureFrameSchema).default([]),
   // Measured per display. A hardcoded 2x is wrong on non-retina and mixed setups.
   displayScale: z.number().positive(),
   displayPoints: z.object({ w: z.number().positive(), h: z.number().positive() }),
@@ -53,6 +70,14 @@ export interface DisplayInfo {
   name: string;
 }
 
+export interface WindowInfo {
+  id: number;
+  title: string;
+  app: string;
+  width: number;
+  height: number;
+}
+
 export interface RecordingOutcome {
   id: string;
   frames: number;
@@ -68,7 +93,9 @@ export interface RecordingOutcome {
 // is not available at all.
 export interface RecordingService {
   listDisplays(): Promise<DisplayInfo[]>;
-  start(displayID: number): Promise<{ id: string }>;
+  listWindows(): Promise<WindowInfo[]>;
+  // Exactly one of displayID or windowID.
+  start(target: { displayID?: number; windowID?: number }): Promise<{ id: string }>;
   stop(): Promise<RecordingOutcome | null>;
   status(): { recording: boolean; last: RecordingOutcome | null };
 }

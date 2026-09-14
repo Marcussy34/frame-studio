@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import type { DisplayInfo } from '../shared/recording';
+import type { DisplayInfo, WindowInfo } from '../shared/recording';
 
-export type { DisplayInfo };
+export type { DisplayInfo, WindowInfo };
 
 export interface RecordingResult {
   frames: number;
@@ -14,7 +14,8 @@ export interface RecordingResult {
 
 export interface Recorder {
   listDisplays(): Promise<DisplayInfo[]>;
-  start(opts: { displayID: number; outDir: string }): Promise<void>;
+  listWindows(): Promise<WindowInfo[]>;
+  start(opts: { displayID?: number; windowID?: number; outDir: string }): Promise<void>;
   stop(): Promise<RecordingResult>;
   dispose(): void;
 }
@@ -96,9 +97,15 @@ export function createRecorder(binaryPath: string): Recorder {
       const reply = await send({ cmd: 'list-displays' }, (event) => event.event === 'displays');
       return reply.displays as DisplayInfo[];
     },
-    async start({ displayID, outDir }) {
+    async listWindows() {
+      const reply = await send({ cmd: 'list-windows' }, (event) => event.event === 'windows');
+      return reply.windows as WindowInfo[];
+    },
+    async start({ displayID, windowID, outDir }) {
       await send(
-        { cmd: 'start', display: displayID, out: outDir },
+        windowID === undefined
+          ? { cmd: 'start', display: displayID, out: outDir }
+          : { cmd: 'start', window: windowID, out: outDir },
         (event) => event.event === 'started',
       );
     },

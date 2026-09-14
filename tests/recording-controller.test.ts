@@ -5,6 +5,7 @@ function deps(overrides: Partial<ControllerDeps> = {}): ControllerDeps {
   return {
     recorder: {
       listDisplays: vi.fn(),
+      listWindows: vi.fn(),
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => ({ frames: 429, samples: 2745, clicks: 8, duration: 7.9 })),
       dispose: vi.fn(),
@@ -63,6 +64,7 @@ describe('createRecordingController', () => {
     const injected = deps({
       recorder: {
         listDisplays: vi.fn(),
+        listWindows: vi.fn(),
         start: vi.fn(async () => {
           throw new Error('permission required: screen-recording');
         }),

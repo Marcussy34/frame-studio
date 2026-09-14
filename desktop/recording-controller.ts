@@ -12,7 +12,7 @@ export interface ControllerDeps {
 }
 
 export interface RecordingController {
-  start(opts: { displayID: number; outDir: string }): Promise<void>;
+  start(opts: { displayID?: number; windowID?: number; outDir: string }): Promise<void>;
   stop(): Promise<RecordingResult | null>;
   isRecording(): boolean;
 }
