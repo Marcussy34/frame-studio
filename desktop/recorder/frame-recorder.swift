@@ -177,13 +177,45 @@ final class StreamDelegate: NSObject, SCStreamDelegate {
     }
 }
 
-final class RecDelegate: NSObject, SCRecordingOutputDelegate {
+// stopCapture() returning does NOT mean the file exists. SCRecordingOutput writes it
+// during finalisation, and this delegate is the only signal that it is done. Measured on
+// an 18 second display recording: 0.15s after stop the file was still ZERO BYTES and
+// unreadable, and only by 0.3s was it complete at 14.8MB. Without waiting, the app copies
+// and probes a file that is not there yet, and the user is told their recording could not
+// be read. Short recordings win that race and long ones lose it, which is what made it
+// look like an audio problem.
+final class RecDelegate: NSObject, SCRecordingOutputDelegate, @unchecked Sendable {
+    private var done = false
+    private let lock = NSLock()
+
+    var finished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return done
+    }
+
+    private func settle() {
+        lock.lock()
+        done = true
+        lock.unlock()
+    }
+
     func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {}
     func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
         emitError("recording output failed: \(error.localizedDescription)")
+        // A failure is still an ending. Waiting the full timeout on one would only delay
+        // telling the user about it.
+        settle()
     }
-    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {}
+    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
+        settle()
+    }
 }
+
+// How long to wait for that finalisation before giving up and handing over whatever is on
+// disk. Generous, because the alternative to waiting is an unreadable recording, and
+// bounded, because a signal that never arrives must not wedge the helper.
+let FINALISE_TIMEOUT = 30.0
 
 // ScreenCaptureKit wants a stream output attached. It also hands us the wall clock time
 // of the first real frame, which is how videoStartOffset is measured rather than assumed.
@@ -239,6 +271,9 @@ final class RecordingSession {
     let kind: String
     let title: String
     let audio: AudioOptions
+    // Retained here on purpose: the recording output does not keep its delegate alive,
+    // and a deallocated one is a finalisation signal that never comes.
+    let recording: RecDelegate
     // Sampled window position. Cursor events are global, so a window that moves during
     // a recording needs its origin tracked or the redrawn cursor drifts away from it.
     let window: SCWindow?
@@ -249,7 +284,7 @@ final class RecordingSession {
         stream: SCStream, sink: SinkOutput, startedAt: Double,
         interruption: Interruption, outDir: String, scale: Double,
         pointsWidth: Int, pointsHeight: Int, kind: String, title: String,
-        audio: AudioOptions, window: SCWindow?, origin: CGRect
+        audio: AudioOptions, recording: RecDelegate, window: SCWindow?, origin: CGRect
     ) {
         self.stream = stream
         self.sink = sink
@@ -262,6 +297,7 @@ final class RecordingSession {
         self.kind = kind
         self.title = title
         self.audio = audio
+        self.recording = recording
         self.window = window
         self.lastSampled = origin
         self.frames = [
@@ -423,12 +459,13 @@ func startRecording(
             try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: audioQueue)
         }
 
+        let recording = RecDelegate()
         let recConfig = SCRecordingOutputConfiguration()
         recConfig.outputURL = URL(fileURLWithPath: videoPath)
         recConfig.outputFileType = .mov
         recConfig.videoCodecType = .h264
         try stream.addRecordingOutput(
-            SCRecordingOutput(configuration: recConfig, delegate: RecDelegate()))
+            SCRecordingOutput(configuration: recConfig, delegate: recording))
 
         try await stream.startCapture()
         emit(["event": "started"])
@@ -437,7 +474,8 @@ func startRecording(
             stream: stream, sink: sink, startedAt: startedAt, interruption: interruption,
             outDir: outDir, scale: scale,
             pointsWidth: pointsWidth, pointsHeight: pointsHeight,
-            kind: kind, title: title, audio: audio, window: window, origin: origin)
+            kind: kind, title: title, audio: audio, recording: recording,
+            window: window, origin: origin)
     } catch {
         emitError("could not start recording: \(error.localizedDescription)")
         return nil
@@ -471,6 +509,16 @@ func finishRecording(_ session: RecordingSession) async {
         // An already-stopped stream throws here, which is expected after an
         // interruption. The bundle is still worth finalising.
     }
+
+    // The file does not exist yet. See RecDelegate: stopCapture() returning only means
+    // the stream is done, and SCRecordingOutput writes the movie afterwards. The run loop
+    // is pumped rather than slept on, because that callback is delivered through it.
+    let deadline = Date().addingTimeInterval(FINALISE_TIMEOUT)
+    while !session.recording.finished && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    let finalised = session.recording.finished
+
     let metaPath = (session.outDir as NSString).appendingPathComponent("meta.json")
     do {
         // Measured, not assumed. The gap is real and not small: the cursor track opens
@@ -507,6 +555,9 @@ func finishRecording(_ session: RecordingSession) async {
         // Absent on a normal stop, so the bridge only explains itself when something
         // actually went wrong.
         if let reason = session.interruption.reason { finished["interrupted"] = reason }
+        // A recording that never reported finishing may be short or unreadable, and that
+        // is worth saying rather than leaving the app to discover it.
+        if !finalised { finished["unfinalised"] = true }
         emit(finished)
     } catch {
         emitError("could not finalise recording: \(error.localizedDescription)")

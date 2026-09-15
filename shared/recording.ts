@@ -163,6 +163,9 @@ export interface RecordingOutcome {
   duration: number;
   // Present only when a display change stopped the stream early.
   interrupted?: string;
+  // The capture helper gave up waiting for the movie to be finalised, so the file may be
+  // short or unreadable. See RecDelegate in the capture helper.
+  unfinalised?: boolean;
   // The video recorded but no cursor events arrived, so the cursor cannot be drawn.
   noCursorData?: boolean;
   // Absent when no audio was asked for. Carries the peaks, so a microphone that
@@ -174,9 +177,14 @@ export interface RecordingOutcome {
 // Both cases look perfectly fine on playback until the moment they matter, which is why
 // they are reported rather than left to be discovered.
 export function recordingNotice(outcome: {
+  unfinalised?: boolean;
   noCursorData?: boolean;
   audio?: RecordingAudio;
 }): string | null {
+  // First, because it is the only one that can leave a file that will not open at all.
+  if (outcome.unfinalised) {
+    return 'This recording did not finish writing, so it may be short or unreadable. Try recording again, and give it a moment to finish before opening it.';
+  }
   if (outcome.noCursorData) {
     return 'This recording has no cursor data. Enable Accessibility for Frame Studio in System Settings, Privacy and Security, then record again.';
   }

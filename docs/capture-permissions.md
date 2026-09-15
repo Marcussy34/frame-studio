@@ -234,6 +234,30 @@ only recorded 105 frames, system audio recorded fine, microphone hung.
 cannot interleave with its synchronous `RunLoop.main.run`, and the check then never
 started at all. The authorization guard is what makes the await safe.
 
+### stopCapture() returning does not mean the file exists
+
+`SCRecordingOutput` writes the movie during finalisation, after the stream has stopped,
+and `recordingOutputDidFinishRecording` is the only signal that it is done. Measured on an
+18 second display recording with audio:
+
+```
+0.15s after stop returned:  video.mov is 0 bytes, ffprobe fails
+0.30s after stop returned:  video.mov is 14.8 MB, ffprobe succeeds
+```
+
+Until the helper waited for that callback, the app copied and probed a file that was not
+there yet and told the user "We could not read this video". Short recordings won the race
+and long ones lost it, which made it look like an audio problem rather than a timing one.
+
+Two things the fix depends on:
+
+- **The session retains the delegate.** `SCRecordingOutput` does not keep it alive, and a
+  deallocated delegate is a callback that never arrives.
+- **The wait pumps the run loop** rather than sleeping, because that is how the callback is
+  delivered, and it is bounded by `FINALISE_TIMEOUT` so a signal that never comes cannot
+  wedge the helper. Giving up sets `unfinalised` on the finished event, which the app
+  reports rather than leaving the user to discover an unreadable file.
+
 ### The system default input is often not a microphone
 
 On the development machine `AVCaptureDevice.default(for: .audio)` was a pair of USB

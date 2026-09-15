@@ -17,6 +17,8 @@ export interface CaptureResult {
   duration: number;
   // Present only when a display change stopped the stream early.
   interrupted?: string;
+  // The helper gave up waiting for the movie to be finalised.
+  unfinalised?: boolean;
   // Absent when no audio was asked for.
   audio?: RecordingAudio;
 }
@@ -202,6 +204,7 @@ export function createRecorder(binaryPath: string): Recorder {
         frames: reply.frames as number,
         duration: reply.duration as number,
         interrupted: reply.interrupted as string | undefined,
+        ...(reply.unfinalised === true ? { unfinalised: true } : {}),
         audio: reply.audio as RecordingAudio | undefined,
       };
     },

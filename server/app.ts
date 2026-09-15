@@ -146,9 +146,13 @@ export async function createApp({
         await work();
         record.job.status = 'ready';
         record.job.progress = 1;
-      } catch {
+      } catch (error) {
         record.job.status = record.controller.signal.aborted ? 'cancelled' : 'failed';
         if (record.job.status === 'failed') {
+          // The user gets something they can act on, but the real cause is logged rather
+          // than discarded. Swallowing it entirely made a recording that failed to open
+          // impossible to diagnose from anything the app had written down.
+          console.error(`${record.job.kind} job failed:`, error);
           record.job.error =
             record.job.kind === 'import'
               ? 'We could not read this video. Try a MOV or MP4 exported from QuickTime.'

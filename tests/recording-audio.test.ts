@@ -110,6 +110,27 @@ describe('recordingNotice', () => {
     expect(notice).toMatch(/Microphone/);
   });
 
+  it('reports an unfinished recording before anything else', () => {
+    // Measured: stopCapture() returning does not mean the movie exists. An 18 second
+    // display recording was still zero bytes 0.15s after stop, so a bundle handed over
+    // before finalisation can fail to open at all, which outranks a silent source or a
+    // missing cursor track.
+    const notice = recordingNotice({
+      unfinalised: true,
+      noCursorData: true,
+      audio: { system: true, microphone: true, device: '', microphonePeak: -120 },
+    });
+    expect(notice).toMatch(/did not finish writing/);
+  });
+
+  it('says nothing about finalisation when the recording finished properly', () => {
+    expect(
+      recordingNotice({
+        audio: { system: true, microphone: true, device: '', systemPeak: -20, microphonePeak: -18 },
+      }),
+    ).toBeNull();
+  });
+
   it('puts a missing cursor track first, since it costs more than silence', () => {
     const notice = recordingNotice({
       noCursorData: true,

@@ -153,10 +153,20 @@ test('recording with system audio on produces a video with an audio track', asyn
         headers: { 'X-Frame-Studio': '1' },
       });
       return (await response.json()) as {
-        outcome: { id: string; audio?: { system: boolean; systemPeak?: number } } | null;
+        outcome: {
+          id: string;
+          unfinalised?: boolean;
+          audio?: { system: boolean; systemPeak?: number };
+        } | null;
       };
     });
     expect(stopped.outcome?.audio?.system).toBe(true);
+    // stopCapture() returning does not mean the movie exists: SCRecordingOutput writes it
+    // during finalisation. Measured before the helper waited for that, an 18 second
+    // display recording was still zero bytes 0.15s after stop, and the app copied and
+    // probed a file that was not there yet. Anything other than false here means the
+    // helper handed over a recording it had not finished writing.
+    expect(stopped.outcome?.unfinalised ?? false).toBe(false);
     // The peak is reported whether or not anything was playing, so a silent source can
     // be told apart from one that was never asked for.
     expect(typeof stopped.outcome?.audio?.systemPeak).toBe('number');
