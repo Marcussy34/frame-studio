@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { InfoCircle, Microphone2, VolumeHigh } from 'iconsax-reactjs';
 import {
   describeLevel,
+  QUIET_DBFS,
   SILENT_DBFS,
   type AudioInput,
   type AudioOptions,
@@ -37,6 +38,9 @@ interface Props {
 const LEVEL_POLL_MS = 120;
 // A level bar covers this much range. Below it there is nothing to show.
 const METER_FLOOR = SILENT_DBFS - 20;
+// The select's stand-in for "whatever macOS has set". Never an empty string: base-ui
+// reads that as no value at all and greys the trigger out as an unfilled placeholder.
+const DEFAULT_DEVICE = 'default';
 
 export function RecordAudio({ value, onChange, listen, access, onRequestAccess }: Props) {
   const [inputs, setInputs] = useState<AudioInput[]>([]);
@@ -64,10 +68,10 @@ export function RecordAudio({ value, onChange, listen, access, onRequestAccess }
       .catch(() => setInputs([]));
   }, [listen]);
 
-  // Opening the chosen input and watching it. ScreenCaptureKit mixes the microphone
-  // into a single track with system audio, so a muted or wrongly chosen input cannot be
-  // rescued afterwards. On this machine the system default input is a pair of speakers
-  // whose microphone records 30 dB below the one the user actually meant.
+  // Opening the chosen input and watching it. ScreenCaptureKit mixes the microphone into
+  // a single track with system audio, so a muted or wrongly chosen input cannot be
+  // rescued afterwards, and the system default is often a pair of speakers.
+  //
   // Only once macOS has actually allowed it. Asking ScreenCaptureKit for an input that
   // has not been granted does not fail, it blocks: measured, a pending microphone
   // decision left replayd's kTCCServiceMicrophone queue stuck and every later capture,
@@ -127,7 +131,21 @@ export function RecordAudio({ value, onChange, listen, access, onRequestAccess }
   }, [wanted, value.device, access]);
 
   const level = describeLevel(wanted ? loudest.current : undefined);
-  const filled = Math.max(0, Math.min(1, (peak - METER_FLOOR) / -METER_FLOOR));
+  const scale = (dbfs: number) => Math.max(0, Math.min(1, (dbfs - METER_FLOOR) / -METER_FLOOR));
+  const filled = scale(peak);
+  const loudestFill = wanted ? scale(loudest.current) : 0;
+  // Where speech should be reaching, so the bar has something to aim at rather than
+  // just being long or short.
+  const targetFill = scale(QUIET_DBFS);
+
+  // "System default" is what macOS hands over when no device is named, but which device
+  // that actually is matters: on this machine it is a pair of speakers. Naming it turns
+  // a vague setting into an obvious one.
+  const defaultInput = inputs.find((input) => input.isDefault);
+  const defaultLabel = defaultInput ? `System default (${defaultInput.name})` : 'System default';
+  const chosenName = value.device
+    ? (inputs.find((input) => input.id === value.device)?.name ?? 'Selected input')
+    : defaultLabel;
 
   return (
     <div className="space-y-2">
@@ -196,46 +214,76 @@ export function RecordAudio({ value, onChange, listen, access, onRequestAccess }
       )}
 
       {value.microphone && (
-        <div className="space-y-2 rounded-lg border border-border/70 bg-card/45 p-3">
-          <Select
-            value={value.device}
-            onValueChange={(next) => {
-              if (typeof next === 'string') onChange({ ...value, device: next });
-            }}
-          >
-            <SelectTrigger id="record-mic-device" aria-label="Microphone" className="h-9 w-full">
-              <SelectValue>
-                {inputs.find((input) => input.id === value.device)?.name ?? 'System default'}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="">System default</SelectItem>
-              {inputs.map((input) => (
-                <SelectItem key={input.id} value={input.id}>
-                  {input.name}
-                  {input.isDefault ? ' · default' : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="space-y-2.5 rounded-lg border border-border/70 bg-card/45 p-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="record-mic-device" className="text-[10px] text-muted-foreground">
+              Input
+            </Label>
+            <Select
+              value={value.device || DEFAULT_DEVICE}
+              onValueChange={(next) => {
+                if (typeof next !== 'string') return;
+                onChange({ ...value, device: next === DEFAULT_DEVICE ? '' : next });
+              }}
+            >
+              <SelectTrigger id="record-mic-device" aria-label="Input" className="h-9 w-full">
+                <SelectValue>{chosenName}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {/* Never an empty string: base-ui reads that as no value at all and
+                    styles the trigger as an unfilled placeholder. */}
+                <SelectItem value={DEFAULT_DEVICE}>{defaultLabel}</SelectItem>
+                {inputs.map((input) => (
+                  <SelectItem key={input.id} value={input.id}>
+                    {input.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           {/* The level is the point of this panel. Both sources land on one track that
-              cannot be unmixed, so this is the only chance to notice silence. */}
-          <div
-            role="meter"
-            aria-label="Microphone level"
-            aria-valuemin={METER_FLOOR}
-            aria-valuemax={0}
-            aria-valuenow={Math.round(peak)}
-            className="h-1.5 w-full overflow-hidden rounded-full bg-secondary"
-          >
+              cannot be unmixed, so this is the only chance to notice silence. The number
+              matters as much as the bar: at a noise floor near -74 dBFS the bar is a
+              sliver, which reads as broken rather than as nothing arriving. */}
+          <div className="flex items-center gap-2">
             <div
-              className={cn(
-                'h-full rounded-full transition-[width] duration-100',
-                level === 'good' ? 'bg-primary' : level === 'quiet' ? 'bg-amber-500' : 'bg-border',
+              role="meter"
+              aria-label="Microphone level"
+              aria-valuemin={METER_FLOOR}
+              aria-valuemax={0}
+              aria-valuenow={Math.round(peak)}
+              className="relative h-2 flex-1 overflow-hidden rounded-full bg-secondary"
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full transition-[width] duration-100',
+                  level === 'good'
+                    ? 'bg-primary'
+                    : level === 'quiet'
+                      ? 'bg-amber-500'
+                      : 'bg-muted-foreground/40',
+                )}
+                style={{ width: `${filled * 100}%` }}
+              />
+              {/* Holds the loudest moment so a single word still leaves a mark, and
+                  where speech should be reaching, so there is something to aim at. */}
+              {loudestFill > 0.02 && (
+                <span
+                  aria-hidden
+                  className="absolute inset-y-0 w-0.5 rounded-full bg-foreground/70"
+                  style={{ left: `calc(${Math.min(loudestFill, 1) * 100}% - 1px)` }}
+                />
               )}
-              style={{ width: `${filled * 100}%` }}
-            />
+              <span
+                aria-hidden
+                className="absolute inset-y-0 w-px bg-foreground/20"
+                style={{ left: `${targetFill * 100}%` }}
+              />
+            </div>
+            <span className="w-14 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
+              {peak <= METER_FLOOR ? 'no signal' : `${Math.round(peak)} dB`}
+            </span>
           </div>
 
           <p className="flex items-start gap-1.5 text-[10px] text-muted-foreground">
@@ -248,8 +296,8 @@ export function RecordAudio({ value, onChange, listen, access, onRequestAccess }
                   : level === 'good'
                     ? 'Sounds good. Speak at this level while you record.'
                     : level === 'quiet'
-                      ? 'Faint. Move closer, or pick a different input.'
-                      : 'Say something. If the bar stays flat, this input is not hearing you, and macOS may still need to allow the microphone.'}
+                      ? 'Audible but faint. Move closer, or choose a different input.'
+                      : 'Say something. If nothing moves, this input cannot hear you: the system default is often speakers or a webcam rather than your microphone.'}
             </span>
           </p>
         </div>
