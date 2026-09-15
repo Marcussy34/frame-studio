@@ -5,6 +5,7 @@ import type { ZoomPlan } from '../../shared/zoom-plan';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
 
 interface Props {
@@ -24,6 +25,29 @@ interface PlanJob {
   error?: string;
 }
 
+// The three things planning actually does, read off the only progress the job reports:
+// 0.4 when the frames are cut, 0.95 when the model has answered. The middle stage is the
+// long one and the only honest thing to say about it is roughly how long it takes.
+export function stageOf(progress: number): { label: string; detail: string } {
+  // Short enough to fit the inspector, which is about 230px wide. The longer sentence
+  // belongs in the detail line, where it can wrap.
+  if (progress < 0.4) {
+    return { label: 'Sampling frames', detail: 'Picking the moments worth looking at.' };
+  }
+  if (progress < 0.95) {
+    return {
+      label: 'Watching your recording',
+      detail: 'The long part, usually around nine minutes. You can keep editing while it runs.',
+    };
+  }
+  return { label: 'Reading the plan', detail: 'Almost there.' };
+}
+
+export function elapsedLabel(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
 function timeRange(start: number, end: number): string {
   const clock = (value: number) =>
     `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`;
@@ -38,6 +62,10 @@ export function CameraPlan({ asset, settings, onChange, onPlanned, disabled }: P
   // leaves this machine.
   const [useFrames, setUseFrames] = useState(true);
   const [available, setAvailable] = useState<boolean | null>(null);
+  // Planning sits on one progress value for minutes at a time, so a number alone looks
+  // frozen. A clock that keeps moving is the thing that says it is still working.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   // The button is hidden rather than shown broken when Antigravity is not installed,
   // which is the common case on any machine but the one this was built on.
@@ -73,8 +101,17 @@ export function CameraPlan({ asset, settings, onChange, onPlanned, disabled }: P
     };
   }, [planning, onPlanned]);
 
+  // Ticks only while a plan is running, so an idle panel costs nothing.
+  useEffect(() => {
+    if (!planning || planning.status !== 'processing') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [planning]);
+
   const start = useCallback(async () => {
     setNote(null);
+    setStartedAt(Date.now());
+    setNow(Date.now());
     try {
       const job = await api<PlanJob>(
         `/api/recordings/${encodeURIComponent(asset.name)}/zoom-plan`,
@@ -104,6 +141,7 @@ export function CameraPlan({ asset, settings, onChange, onPlanned, disabled }: P
 
   if (available === false && !plan) return null;
   const busy = planning?.status === 'processing';
+  const stage = stageOf(planning?.progress ?? 0);
 
   return (
     <div className="space-y-3 rounded-lg border border-border/70 bg-card/45 p-3">
@@ -166,10 +204,39 @@ export function CameraPlan({ asset, settings, onChange, onPlanned, disabled }: P
       )}
 
       {busy ? (
-        <p className="text-[10px] text-muted-foreground">
-          Planning, {Math.round((planning?.progress ?? 0) * 100)}%. This takes several minutes, and
-          you can keep editing while it runs.
-        </p>
+        <div
+          role="status"
+          aria-live="polite"
+          // Named, because the app has a dozen unnamed live regions and a screen reader
+          // announcing an unattributed "waiting" is not much help.
+          aria-label="Camera planning"
+          className="space-y-2 rounded-md border border-border/70 bg-secondary/40 p-2.5"
+        >
+          <div className="flex items-center gap-2 text-[11px] font-medium">
+            {/* Deliberately a moving thing rather than a number. The progress value can
+                sit unchanged for the whole of the model's turn. */}
+            <span
+              aria-hidden
+              className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary"
+            />
+            <span className="min-w-0 flex-1">{stage.label}</span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {elapsedLabel(now - (startedAt ?? now))}
+            </span>
+          </div>
+          {/* The fill pulses as well as filling. Its value can be unchanged for the
+              whole of the model's turn, and a bar that never moves reads as a stall.
+              Reached through the slot the component sets on its indicator. */}
+          <Progress
+            aria-label="Planning progress"
+            className="[&_[data-slot=progress-indicator]]:animate-pulse"
+            // Never a hairline. At the first stage the real value is zero, and a bar with
+            // no extent at all reads as a control that failed to render rather than as
+            // work that has just begun.
+            value={Math.max(5, Math.round((planning?.progress ?? 0) * 100))}
+          />
+          <p className="text-[10px] leading-relaxed text-muted-foreground">{stage.detail}</p>
+        </div>
       ) : (
         <div className="flex gap-2">
           {available !== false && (
