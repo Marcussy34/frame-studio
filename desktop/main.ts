@@ -156,6 +156,11 @@ else {
             window?.show();
           }
         },
+        // The microphone grant belongs to the app bundle, not to the helper, so Electron
+        // is the right thing to ask. NSMicrophoneUsageDescription in the packaged
+        // Info.plist is what makes the prompt appear rather than a crash.
+        microphoneAccess: () => systemPreferences.getMediaAccessStatus('microphone'),
+        askForMicrophone: () => systemPreferences.askForMediaAccess('microphone'),
       });
     }
 

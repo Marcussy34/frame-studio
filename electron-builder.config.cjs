@@ -43,6 +43,13 @@ module.exports = {
     // as a new program and quietly invalidates the Screen Recording grant.
     signIgnore: ['frame-recorder$'],
     hardenedRuntime: false,
+    // Recording the microphone is gated on this string. Without it macOS kills the
+    // process on first access rather than showing a prompt. System audio needs no key
+    // of its own: ScreenCaptureKit covers it under Screen and System Audio Recording.
+    extendInfo: {
+      NSMicrophoneUsageDescription:
+        'Frame Studio records your microphone so you can narrate a screen recording.',
+    },
     minimumSystemVersion: media.minimumMacOS,
   },
 };

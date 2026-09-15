@@ -7,6 +7,7 @@ import multer from 'multer';
 import sharp from 'sharp';
 import { exportSchema, settingsSchema } from '../shared/composition';
 import {
+  audioOptionsSchema,
   bundlePaths,
   captureRegionSchema,
   isBundleId,
@@ -443,6 +444,18 @@ export async function createApp({
     }
   });
 
+  // Separate from the read-only check for the same reason as cursor access: this one
+  // deliberately puts a system dialog on screen.
+  app.post('/api/recording/microphone-access', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json(await service.requestMicrophoneAccess());
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   app.get('/api/windows', async (_req, res) => {
     const service = requireRecording(res);
     if (!service) return;
@@ -451,6 +464,51 @@ export async function createApp({
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
     }
+  });
+
+  // Every audio input macOS can see. Listing needs no permission, so the picker is
+  // filled in before the microphone has ever been granted.
+  app.get('/api/audio-inputs', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      res.json({ inputs: await service.listAudioInputs() });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // Listening to an input before recording. ScreenCaptureKit mixes the microphone into
+  // one track with system audio and there is no way to unmix it afterwards, so a muted
+  // or wrongly chosen input has to be caught here or not at all.
+  app.post('/api/recording/mic-check', async (req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    const device = (req.body as { device?: unknown } | undefined)?.device;
+    try {
+      await service.startMicCheck(typeof device === 'string' ? device : '');
+      res.json({ listening: true });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  app.delete('/api/recording/mic-check', async (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    try {
+      await service.stopMicCheck();
+      res.json({ listening: false });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // Polled while the record dialog is open, the same way recording status is.
+  app.get('/api/recording/mic-level', (_req, res) => {
+    const service = requireRecording(res);
+    if (!service) return;
+    res.json(service.micLevel());
   });
 
   // Opens the drag-to-select overlay. Returns null when the user cancels.
@@ -468,10 +526,14 @@ export async function createApp({
     const service = requireRecording(res);
     if (!service) return;
     const body = req.body as
-      { displayID?: unknown; windowID?: unknown; region?: unknown } | undefined;
+      { displayID?: unknown; windowID?: unknown; region?: unknown; audio?: unknown } | undefined;
     const displayID = Number(body?.displayID);
     const windowID = Number(body?.windowID);
     const parsedRegion = captureRegionSchema.safeParse(body?.region);
+    // A malformed audio block records without sound rather than refusing to record,
+    // which is the lesser of the two disappointments.
+    const parsedAudio = audioOptionsSchema.safeParse(body?.audio);
+    const audio = parsedAudio.success ? parsedAudio.data : undefined;
     // Exactly one target, so an ambiguous request is rejected rather than guessed at.
     // A region narrows the display it was drawn on.
     const target = parsedRegion.success
@@ -486,7 +548,7 @@ export async function createApp({
       return;
     }
     try {
-      res.json(await service.start(target));
+      res.json(await service.start({ ...target, ...(audio ? { audio } : {}) }));
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });
     }

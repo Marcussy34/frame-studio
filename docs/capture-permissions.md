@@ -5,11 +5,12 @@ from Apple's documentation.
 
 ## Summary
 
-| Permission       | Held by            | Needed for                                                             | How it is granted                                               |
-| ---------------- | ------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Screen Recording | the capture helper | `SCShareableContent` and `SCStream`, so listing displays and capturing | System prompt on first use, then the process must be restarted  |
-| Accessibility    | Frame Studio.app   | The event tap that logs cursor position and clicks                     | System Settings, Privacy and Security, Accessibility. Immediate |
-| Input Monitoring | nobody             | Nothing any more, see below                                            | Not requested                                                   |
+| Permission       | Held by            | Needed for                                                             | How it is granted                                                |
+| ---------------- | ------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Screen Recording | the capture helper | `SCShareableContent` and `SCStream`, so listing displays and capturing | System prompt on first use, then the process must be restarted   |
+| Accessibility    | Frame Studio.app   | The event tap that logs cursor position and clicks                     | System Settings, Privacy and Security, Accessibility. Immediate  |
+| Input Monitoring | nobody             | Nothing any more, see below                                            | Not requested                                                    |
+| Microphone       | Frame Studio.app   | `SCStreamConfiguration.captureMicrophone`, so narration over a demo    | System prompt on first use, needs `NSMicrophoneUsageDescription` |
 
 ## Why the cursor is tracked in the app and not in the helper
 
@@ -131,6 +132,116 @@ does not have.
 `Task.sleep` leaves the run loop idle and silently produces an empty cursor track, with no
 error anywhere. `RunLoop.main.run(until:)` is required. The helper still pumps the run
 loop, because ScreenCaptureKit delivers through it too.
+
+## Audio, measured rather than inferred
+
+ScreenCaptureKit captures system audio (`capturesAudio`, macOS 13) and the microphone
+(`captureMicrophone`, macOS 15) natively. No `AVCaptureSession` is involved.
+
+### SCRecordingOutput always writes exactly ONE audio track
+
+This is the finding that shaped the whole feature. `SCRecordingOutputConfiguration` has
+no audio properties at all: no codec, no bitrate, no way to keep the sources apart.
+Measured on a real machine with four runs, counting streams with `ffprobe -show_streams`:
+
+| System audio | Microphone | Audio streams in the file |
+| ------------ | ---------- | ------------------------- |
+| on           | on         | 1                         |
+| on           | off        | 1                         |
+| off          | on         | 1                         |
+| off          | off        | 0                         |
+
+Both sources arrive as separate `SCStreamOutputType` buffers, and ScreenCaptureKit sums
+them before the recording output ever sees them. **The balance between narration and
+system sound therefore cannot be changed afterwards.** Splitting them would mean
+abandoning `SCRecordingOutput` and writing video and both audio tracks with
+`AVAssetWriter`, which trades a working, tested capture path for a mixing control.
+
+That trade was not taken. Instead the record dialog shows a live input meter before
+recording, so a silent or wrongly chosen input is caught while it can still be fixed,
+and `recordingNotice` in `shared/recording.ts` reports a source that recorded silence.
+
+### `excludesCurrentProcessAudio` excludes by responsible process
+
+Setting it to `true` is right for the app: Frame Studio's own sounds should not appear in
+a recording of Frame Studio. But it does not mean only this process.
+
+Measured: with `excludesCurrentProcessAudio = true`, a probe launched directly from a
+terminal recorded **digital silence** while `afplay` played a tone from that same
+terminal. Flipping the flag to `false`, with nothing else changed, captured the tone at
+-40 dBFS. The same probe spawned by `node` instead captured the tone with the flag still
+`true`.
+
+So a terminal-launched test of system audio looks broken when it is not. Test system
+audio by playing it from an unrelated application, or through the packaged app.
+
+### The two sources have different sample formats
+
+Read from the `AudioStreamBasicDescription`, not assumed. Reading one as the other gives
+plausible-looking nonsense rather than an error, which is exactly how a silent recording
+would slip through.
+
+| Source        | Format                               | Rate  | Channels |
+| ------------- | ------------------------------------ | ----- | -------- |
+| `.audio`      | Float32, packed, **non-interleaved** | 48000 | 2        |
+| `.microphone` | Int16, packed                        | 48000 | 1        |
+
+### Microphone capture is mediated by replayd, and a pending decision wedges everything
+
+This one cost an evening and is worth reading in full.
+
+ScreenCaptureKit does **not** resolve the microphone grant against the calling binary the
+way an event tap does. `replayd` asks for it, on its own serial queue. Sampled from a real
+stuck run:
+
+```
+com.apple.tcc.auth.kTCCServiceMicrophone  (serial)
+  tcc_server_message_request_authorization
+    _tcc_server_send_request_authorization
+      tccd_send_message → mach_msg2_trap
+com.apple.replaykit.AlertDispatchQueue  (three more threads, same stack)
+```
+
+So the bare helper binary is **not** the problem here. The problem is what happens while
+that request is outstanding:
+
+- **`startCapture()` with `captureMicrophone = true` does not fail when the grant is
+  missing. It never returns.** There is no error, no timeout, nothing to catch.
+- Every later microphone capture queues behind it on that one serial queue, **in every
+  process on the machine**. A capture that worked minutes earlier from a terminal stopped
+  working, because it is the same `replayd`.
+- Killing the blocked client does not clear it. `killall replayd` does; it is launchd
+  managed and respawns on demand, and the very next capture worked again.
+
+Screen capture and system audio are unaffected throughout. Measured while wedged: screen
+only recorded 105 frames, system audio recorded fine, microphone hung.
+
+**Consequences for this code, all of them load bearing:**
+
+1. The helper checks `AVCaptureDevice.authorizationStatus(for: .audio)` before it will
+   configure the microphone at all, in `startMicTest` and in `startRecording`.
+2. The helper **never calls `requestAccess` itself.** It is a bare executable with no
+   Info.plist, so it has nothing to prompt with. Asking belongs to the app, which carries
+   `NSMicrophoneUsageDescription`.
+3. A recording that asked for the microphone without the grant records **without it** and
+   reports `microphoneBlocked`, rather than being refused. The countdown has already run
+   and the window is already hidden by then.
+4. The record dialog does not start the level check until the grant is actually
+   `granted`.
+
+**Do not "fix" the blocking await in the helper's command loop by handing the work to a
+`Task`.** That was tried and measured: the loop drives the main actor, main-actor work
+cannot interleave with its synchronous `RunLoop.main.run`, and the check then never
+started at all. The authorization guard is what makes the await safe.
+
+### The system default input is often not a microphone
+
+On the development machine `AVCaptureDevice.default(for: .audio)` was a pair of USB
+speakers. With a tone playing in the room it recorded **-74 dBFS**, against **-43 dBFS**
+from the Razer microphone sitting next to it, a 30 dB difference. Eight input devices
+were listed, two of them silent loopback drivers (BlackHole, Microsoft Teams Audio).
+
+This is why the device picker and the level meter exist rather than just a switch.
 
 ## Display scale is not always 2
 

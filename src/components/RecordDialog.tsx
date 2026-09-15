@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Crop, InfoCircle, Maximize4, Monitor, Record, TickCircle } from 'iconsax-reactjs';
+import { audioOptionsSchema } from '../../shared/recording';
 import type {
+  AudioOptions,
   CaptureRegion,
   DisplayInfo,
   PermissionReport,
@@ -17,6 +19,7 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
+import { RecordAudio } from '@/components/RecordAudio';
 import { RecordingsList } from '@/components/RecordingsList';
 
 interface Props {
@@ -27,8 +30,23 @@ interface Props {
 }
 
 const COUNTDOWN_SECONDS = 3;
+// Whether to record sound, and which input, is a property of this machine rather than
+// of a composition, so it lives beside the canvas settings rather than inside them.
+const AUDIO_STORAGE_KEY = 'frame-studio.record-audio';
 
 type Target = 'display' | 'window' | 'region';
+
+function savedAudio(): AudioOptions {
+  try {
+    const parsed = audioOptionsSchema.safeParse(
+      JSON.parse(localStorage.getItem(AUDIO_STORAGE_KEY) || 'null'),
+    );
+    if (parsed.success) return parsed.data;
+  } catch {
+    // Unreadable storage is not worth failing over. Both sources start off.
+  }
+  return { system: false, microphone: false, device: '' };
+}
 
 export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }: Props) {
   const [target, setTarget] = useState<Target>('display');
@@ -39,6 +57,8 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
   const [region, setRegion] = useState<CaptureRegion | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<PermissionReport | null>(null);
+  const [audio, setAudio] = useState<AudioOptions>(savedAudio);
+  const wantsMicrophone = audio.microphone;
 
   // Checked when the dialog opens rather than discovered after a countdown. Without
   // Accessibility a recording refuses to start, and finding that out three seconds in,
@@ -53,8 +73,11 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
         if (cancelled) return;
         setPermissions(report);
         // Granting happens over in System Settings, so the notice watches for it
-        // rather than leaving stale advice on screen.
-        if (!report.accessibility) timer = setTimeout(() => void check(), 2000);
+        // rather than leaving stale advice on screen. The microphone is only watched
+        // once it is wanted, so an unused switch costs nothing.
+        if (!report.accessibility || (wantsMicrophone && report.microphone !== 'granted')) {
+          timer = setTimeout(() => void check(), 2000);
+        }
       } catch {
         if (!cancelled) setPermissions(null);
       }
@@ -64,7 +87,7 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [open]);
+  }, [open, wantsMicrophone]);
 
   // Windows are refetched every time the picker opens, since the list goes stale as
   // soon as anyone opens or closes something.
@@ -111,20 +134,21 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
       await api('/api/recording/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          target === 'region'
+        body: JSON.stringify({
+          audio,
+          ...(target === 'region'
             ? { region }
             : target === 'display'
               ? { displayID: selected }
-              : { windowID: selected },
-        ),
+              : { windowID: selected }),
+        }),
       });
       onStarted();
     } catch (cause) {
       setCountdown(null);
       setError((cause as Error).message);
     }
-  }, [selected, target, region, onStarted]);
+  }, [selected, target, region, audio, onStarted]);
 
   // Counts down visibly before starting, because the window hides on start and the
   // user needs a moment to get the screen ready.
@@ -258,6 +282,33 @@ export function RecordDialog({ open, onOpenChange, onStarted, onOpenRecording }:
                 )}
               </div>
             )}
+            <RecordAudio
+              value={audio}
+              onChange={(next) => {
+                setAudio(next);
+                try {
+                  localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify(next));
+                } catch {
+                  // Not being able to remember the choice is not a reason to refuse it.
+                }
+              }}
+              // Nothing holds the microphone open once the countdown starts: the helper
+              // needs it for the recording itself.
+              listen={open && countdown === null}
+              access={permissions?.microphone}
+              onRequestAccess={async () => {
+                setError(null);
+                try {
+                  setPermissions(
+                    await api<PermissionReport>('/api/recording/microphone-access', {
+                      method: 'POST',
+                    }),
+                  );
+                } catch (cause) {
+                  setError((cause as Error).message);
+                }
+              }}
+            />
           </div>
         ) : (
           <p className="py-8 text-center text-5xl font-semibold tabular-nums">{countdown}</p>

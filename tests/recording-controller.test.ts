@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CursorTracker } from '../desktop/cursor-track';
+import type { Recorder } from '../desktop/recorder-bridge';
 import { type ControllerDeps, createRecordingController } from '../desktop/recording-controller';
 
 function tracker(overrides: Partial<CursorTracker> = {}): CursorTracker {
@@ -13,16 +14,27 @@ function tracker(overrides: Partial<CursorTracker> = {}): CursorTracker {
   };
 }
 
+// One place to build a helper stand-in, so a new command on the Recorder interface does
+// not have to be repeated in every test that only cares about start and stop.
+function recorder(overrides: Partial<Recorder> = {}): Recorder {
+  return {
+    permissions: vi.fn(),
+    listDisplays: vi.fn(),
+    listWindows: vi.fn(),
+    listAudioInputs: vi.fn(async () => []),
+    startMicCheck: vi.fn(async () => {}),
+    stopMicCheck: vi.fn(async () => {}),
+    micLevel: vi.fn(() => ({ listening: false, peak: -120 })),
+    start: vi.fn(async () => {}),
+    stop: vi.fn(async () => ({ frames: 429, duration: 7.9 })),
+    dispose: vi.fn(),
+    ...overrides,
+  };
+}
+
 function deps(overrides: Partial<ControllerDeps> = {}): ControllerDeps {
   return {
-    recorder: {
-      permissions: vi.fn(),
-      listDisplays: vi.fn(),
-      listWindows: vi.fn(),
-      start: vi.fn(async () => {}),
-      stop: vi.fn(async () => ({ frames: 429, duration: 7.9 })),
-      dispose: vi.fn(),
-    },
+    recorder: recorder(),
     cursor: tracker(),
     hideWindow: vi.fn(),
     showWindow: vi.fn(),
@@ -92,16 +104,11 @@ describe('createRecordingController', () => {
     const cursor = tracker();
     const injected = deps({
       cursor,
-      recorder: {
-        permissions: vi.fn(),
-        listDisplays: vi.fn(),
-        listWindows: vi.fn(),
-        start: vi.fn(async () => {}),
+      recorder: recorder({
         stop: vi.fn(async () => {
           throw new Error('recorder helper exited');
         }),
-        dispose: vi.fn(),
-      },
+      }),
     });
     const controller = createRecordingController(injected);
     await controller.start({ displayID: 1, outDir: '/tmp/x' });
@@ -128,16 +135,11 @@ describe('createRecordingController', () => {
     const cursor = tracker();
     const injected = deps({
       cursor,
-      recorder: {
-        permissions: vi.fn(),
-        listDisplays: vi.fn(),
-        listWindows: vi.fn(),
+      recorder: recorder({
         start: vi.fn(async () => {
           throw new Error('permission required: screen-recording');
         }),
-        stop: vi.fn(),
-        dispose: vi.fn(),
-      },
+      }),
     });
     const controller = createRecordingController(injected);
     await expect(controller.start({ displayID: 1, outDir: '/tmp/x' })).rejects.toThrow(

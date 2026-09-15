@@ -58,6 +58,7 @@ function centredTrack(): CursorTrack {
       videoStartOffset: 0,
       duration: 2,
       createdAt: '2026-09-14T00:00:00.000Z',
+      audio: { system: false, microphone: false, device: '' },
     },
     events,
   };

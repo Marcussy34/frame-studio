@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
@@ -110,6 +111,69 @@ test('the picker can switch to recording a single window', async () => {
     });
     await expect(page.getByRole('button', { name: 'Start recording', exact: true })).toBeEnabled();
     expect(errors).toEqual([]);
+  } finally {
+    await application.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('recording with system audio on produces a video with an audio track', async () => {
+  // The whole audio path in one assertion: a switch in the dialog reaches the capture
+  // helper, which reaches SCStreamConfiguration, which reaches the file. Silence is
+  // fine here and expected, since excludesCurrentProcessAudio keeps out anything this
+  // test process could play. What matters is that the track exists at all.
+  expect(existsSync(binary)).toBe(true);
+  const directory = await mkdtemp(join(tmpdir(), 'frame-desktop-audio-'));
+  const profile = join(directory, 'profile');
+  const application = await electron.launch({
+    executablePath: binary,
+    args: [`--user-data-dir=${profile}`],
+    env: { ...process.env, PATH: '/usr/bin:/bin', TMPDIR: directory },
+  });
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: 'Record screen', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Record your screen' })).toBeVisible();
+
+    // Located by role, not by id: base-ui puts the id prop on the switch's hidden
+    // checkbox and gives the button it renders a generated one, labelling it through
+    // aria-labelledby.
+    const systemAudio = page.getByRole('switch', { name: 'System audio' });
+    // Both sources start off, which is what a fresh profile should give.
+    await expect(systemAudio).toHaveAttribute('aria-checked', 'false');
+    await systemAudio.click();
+    await expect(systemAudio).toHaveAttribute('aria-checked', 'true');
+
+    await page.getByRole('button', { name: 'Start recording', exact: true }).click();
+    await page.waitForTimeout(6000);
+
+    const stopped = await page.evaluate(async () => {
+      const response = await fetch('/api/recording/stop', {
+        method: 'POST',
+        headers: { 'X-Frame-Studio': '1' },
+      });
+      return (await response.json()) as {
+        outcome: { id: string; audio?: { system: boolean; systemPeak?: number } } | null;
+      };
+    });
+    expect(stopped.outcome?.audio?.system).toBe(true);
+    // The peak is reported whether or not anything was playing, so a silent source can
+    // be told apart from one that was never asked for.
+    expect(typeof stopped.outcome?.audio?.systemPeak).toBe('number');
+
+    const bundle = join(profile, 'recordings', stopped.outcome!.id);
+    const meta = JSON.parse(await readFile(join(bundle, 'meta.json'), 'utf8')) as {
+      audio: { system: boolean; microphone: boolean };
+    };
+    expect(meta.audio).toMatchObject({ system: true, microphone: false });
+
+    const probe = execFileSync(
+      'ffprobe',
+      ['-v', 'error', '-show_streams', '-of', 'json', join(bundle, 'video.mov')],
+      { encoding: 'utf8' },
+    );
+    const streams = (JSON.parse(probe) as { streams: { codec_type: string }[] }).streams;
+    expect(streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(1);
   } finally {
     await application.close();
     await rm(directory, { recursive: true, force: true });

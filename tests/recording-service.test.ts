@@ -14,9 +14,13 @@ afterAll(async () => {
 
 function recorder(overrides: Partial<Recorder> = {}): Recorder {
   return {
-    permissions: vi.fn(async () => ({ screenRecording: true })),
+    permissions: vi.fn(async () => ({ screenRecording: true, microphone: false })),
     listDisplays: vi.fn(async () => []),
     listWindows: vi.fn(async () => []),
+    listAudioInputs: vi.fn(async () => []),
+    startMicCheck: vi.fn(async () => {}),
+    stopMicCheck: vi.fn(async () => {}),
+    micLevel: vi.fn(() => ({ listening: false, peak: -120 })),
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => ({ frames: 429, duration: 7.9 })),
     dispose: vi.fn(),
@@ -49,23 +53,56 @@ async function service(overrides: Partial<RecordingServiceDeps> = {}) {
     registerShortcut: vi.fn(),
     unregisterShortcut: vi.fn(),
     selectRegion: vi.fn(async () => null),
+    microphoneAccess: vi.fn(() => 'granted' as const),
+    askForMicrophone: vi.fn(async () => true),
     ...overrides,
   };
   return { service: createRecordingService(deps), deps, root };
 }
 
 describe('createRecordingService', () => {
-  it('composes the permission report from both processes', async () => {
-    // The two halves of a recording answer to different grants: the helper holds Screen
+  it('composes the permission report from every process that holds a grant', async () => {
+    // The halves of a recording answer to different grants: the helper holds Screen
     // Recording, this process holds Accessibility. Neither can speak for the other.
     const { service: recording } = await service({
-      recorder: recorder({ permissions: vi.fn(async () => ({ screenRecording: true })) }),
+      recorder: recorder({
+        permissions: vi.fn(async () => ({ screenRecording: true, microphone: false })),
+      }),
       cursor: cursor({ permitted: vi.fn(() => false) }),
+      microphoneAccess: vi.fn(() => 'denied' as const),
     });
     expect(await recording.permissions()).toEqual({
       screenRecording: true,
       accessibility: false,
+      microphone: 'denied',
     });
+  });
+
+  it('believes the helper over Electron when the microphone grant is fresh', async () => {
+    // Measured on a real machine: granting the microphone while the app is running leaves
+    // getMediaAccessStatus reporting 'not-determined' until the next launch, because
+    // Electron caches it for the life of the process. The helper reads it fresh and is
+    // the process that actually opens the input, so it wins. Without this the record
+    // dialog goes on insisting it has never asked, and refuses to start the meter.
+    const { service: recording } = await service({
+      recorder: recorder({
+        permissions: vi.fn(async () => ({ screenRecording: true, microphone: true })),
+      }),
+      microphoneAccess: vi.fn(() => 'not-determined' as const),
+    });
+    expect((await recording.permissions()).microphone).toBe('granted');
+  });
+
+  it("keeps Electron's answer when the helper cannot use the microphone either", async () => {
+    // Electron is the only one that can tell a refusal from a question never asked, which
+    // is the difference between offering a button and pointing at System Settings.
+    const { service: recording } = await service({
+      recorder: recorder({
+        permissions: vi.fn(async () => ({ screenRecording: true, microphone: false })),
+      }),
+      microphoneAccess: vi.fn(() => 'denied' as const),
+    });
+    expect((await recording.permissions()).microphone).toBe('denied');
   });
 
   it('asks for cursor access without a recording being started', async () => {
@@ -74,9 +111,34 @@ describe('createRecordingService', () => {
     expect(await recording.requestCursorAccess()).toEqual({
       screenRecording: true,
       accessibility: false,
+      microphone: 'granted',
     });
     expect(tracker.requestPermission).toHaveBeenCalled();
     expect(tracker.start).not.toHaveBeenCalled();
+  });
+
+  it('reads the microphone grant back rather than trusting what the prompt returned', async () => {
+    // askForMediaAccess answers false both for a fresh denial and for a grant that was
+    // already refused long ago, so only the status afterwards is worth reporting.
+    const ask = vi.fn(async () => false);
+    const { service: recording } = await service({
+      askForMicrophone: ask,
+      microphoneAccess: vi.fn(() => 'denied' as const),
+    });
+    const report = await recording.requestMicrophoneAccess();
+    expect(ask).toHaveBeenCalled();
+    expect(report.microphone).toBe('denied');
+  });
+
+  it('still reports a grant when the prompt itself throws', async () => {
+    // A prompt that fails must not take the whole permission check down with it.
+    const { service: recording } = await service({
+      askForMicrophone: vi.fn(async () => {
+        throw new Error('no window to attach the prompt to');
+      }),
+      microphoneAccess: vi.fn(() => 'granted' as const),
+    });
+    expect((await recording.requestMicrophoneAccess()).microphone).toBe('granted');
   });
 
   it('creates a bundle directory and reports the outcome under its id', async () => {

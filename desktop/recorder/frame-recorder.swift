@@ -16,6 +16,7 @@
 // The recording's t=0 therefore arrives from outside, as `startedAt` on the start
 // command, so both halves of a bundle measure time from the same origin.
 
+import AVFoundation
 import AppKit
 import CoreGraphics
 import CoreMedia
@@ -50,6 +51,103 @@ func scaleFor(displayID: CGDirectDisplayID) -> Double {
 
 func nameFor(displayID: CGDirectDisplayID) -> String {
     screenFor(displayID: displayID)?.localizedName ?? "Display \(displayID)"
+}
+
+// MARK: - audio
+
+// What the caller asked for. Both sources are off unless requested: system audio can
+// pick up a call or whatever is playing, and the microphone needs its own grant.
+struct AudioOptions {
+    var system = false
+    var microphone = false
+    // AVCaptureDevice uniqueID. Empty means whatever macOS has set as the default input.
+    var device = ""
+    // Set when the microphone was asked for and macOS would not allow it. The recording
+    // goes ahead without it rather than being refused: the countdown has already run and
+    // the window is already hidden, so losing the take costs more than losing the sound.
+    var microphoneBlocked = false
+}
+
+// Whether this process may actually open an input right now.
+//
+// This check is not optional. Asking ScreenCaptureKit for the microphone without the
+// grant does not fail: startCapture() simply never returns, which suspends the command
+// loop, stops the run loop being pumped, and wedges the whole helper until it is killed.
+// Measured on a Finder launch with the grant still not determined.
+//
+// The helper deliberately never calls requestAccess itself. It is a bare executable with
+// no Info.plist, so it has nothing to show a prompt with. Asking belongs to the app,
+// which has NSMicrophoneUsageDescription. See desktop/main.ts.
+func microphoneAuthorized() -> Bool {
+    AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+}
+
+// How far down the dBFS scale a reported level is allowed to go. A floor rather than
+// negative infinity, because JSON has no way to carry one. This is NOT the threshold for
+// calling a track silent: that is SILENT_DBFS in shared/recording.ts, and it is much
+// higher, because a real microphone in a quiet room still reads around -74.
+let LEVEL_FLOOR_DB = -120.0
+
+func decibels(_ amplitude: Float) -> Double {
+    amplitude <= 0 ? LEVEL_FLOOR_DB : max(LEVEL_FLOOR_DB, 20 * log10(Double(amplitude)))
+}
+
+// The two sources arrive in different shapes, read from the ASBD rather than assumed:
+// system audio is non-interleaved Float32 stereo, the microphone is packed Int16 mono.
+// Reading one as the other yields plausible looking nonsense, which is exactly how a
+// silent recording would go unnoticed.
+func peakAmplitude(of sampleBuffer: CMSampleBuffer) -> Float {
+    guard let format = sampleBuffer.formatDescription,
+        let asbd = format.audioStreamBasicDescription
+    else { return 0 }
+    let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+    var peak: Float = 0
+    try? sampleBuffer.withAudioBufferList { list, _ in
+        for buffer in list {
+            guard let data = buffer.mData else { continue }
+            if isFloat {
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Float32>.size
+                let samples = data.assumingMemoryBound(to: Float32.self)
+                for index in 0..<count { peak = max(peak, abs(samples[index])) }
+            } else {
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size
+                let samples = data.assumingMemoryBound(to: Int16.self)
+                for index in 0..<count {
+                    peak = max(peak, abs(Float(samples[index]) / 32768))
+                }
+            }
+        }
+    }
+    return peak
+}
+
+// Loudest sample seen per source, plus a level that resets on read so a live meter
+// shows the last moment rather than the loudest moment ever.
+final class Peaks: @unchecked Sendable {
+    private var overall: [Int: Float] = [:]
+    private var recent: [Int: Float] = [:]
+    private let lock = NSLock()
+
+    func note(_ type: SCStreamOutputType, _ peak: Float) {
+        lock.lock()
+        overall[type.rawValue] = max(overall[type.rawValue] ?? 0, peak)
+        recent[type.rawValue] = max(recent[type.rawValue] ?? 0, peak)
+        lock.unlock()
+    }
+
+    func peak(_ type: SCStreamOutputType) -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return overall[type.rawValue] ?? 0
+    }
+
+    func take(_ type: SCStreamOutputType) -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = recent[type.rawValue] ?? 0
+        recent[type.rawValue] = 0
+        return value
+    }
 }
 
 // MARK: - stream plumbing
@@ -94,6 +192,9 @@ final class SinkOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     private var first: Double?
+    // Audio never reaches a file we can inspect until the recording is over, and by then
+    // it is too late to do anything about a muted input, so its level is measured here.
+    let peaks = Peaks()
 
     var frames: Int {
         lock.lock()
@@ -110,6 +211,10 @@ final class SinkOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
+        if type == .audio || type == .microphone {
+            peaks.note(type, peakAmplitude(of: sampleBuffer))
+            return
+        }
         guard type == .screen, sampleBuffer.imageBuffer != nil else { return }
         lock.lock()
         if first == nil { first = Date().timeIntervalSince1970 }
@@ -133,6 +238,7 @@ final class RecordingSession {
     let pointsHeight: Int
     let kind: String
     let title: String
+    let audio: AudioOptions
     // Sampled window position. Cursor events are global, so a window that moves during
     // a recording needs its origin tracked or the redrawn cursor drifts away from it.
     let window: SCWindow?
@@ -143,7 +249,7 @@ final class RecordingSession {
         stream: SCStream, sink: SinkOutput, startedAt: Double,
         interruption: Interruption, outDir: String, scale: Double,
         pointsWidth: Int, pointsHeight: Int, kind: String, title: String,
-        window: SCWindow?, origin: CGRect
+        audio: AudioOptions, window: SCWindow?, origin: CGRect
     ) {
         self.stream = stream
         self.sink = sink
@@ -155,6 +261,7 @@ final class RecordingSession {
         self.pointsHeight = pointsHeight
         self.kind = kind
         self.title = title
+        self.audio = audio
         self.window = window
         self.lastSampled = origin
         self.frames = [
@@ -191,7 +298,7 @@ final class RecordingSession {
 
 func startRecording(
     displayID: CGDirectDisplayID?, windowID: CGWindowID?, region: CGRect?, outDir: String,
-    startedAt: Double
+    startedAt: Double, audio: AudioOptions
 ) async -> RecordingSession? {
     guard CGPreflightScreenCaptureAccess() else {
         _ = CGRequestScreenCaptureAccess()
@@ -269,6 +376,15 @@ func startRecording(
         let videoPath = (outDir as NSString).appendingPathComponent("video.mov")
         try? FileManager.default.removeItem(atPath: videoPath)
 
+        // Never ask ScreenCaptureKit for an input macOS has not allowed: startCapture()
+        // does not fail in that case, it never returns, and the helper is wedged until it
+        // is killed. Recording continues without the microphone and says so afterwards.
+        var audio = audio
+        if audio.microphone && !microphoneAuthorized() {
+            audio.microphone = false
+            audio.microphoneBlocked = true
+        }
+
         let config = SCStreamConfiguration()
         // THE CORE SWITCH. Omit the cursor so it can be redrawn in post from the track.
         config.showsCursor = false
@@ -277,7 +393,18 @@ func startRecording(
         // Crops the stream to the chosen area rather than scaling the whole display down.
         if let crop { config.sourceRect = crop }
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.capturesAudio = false
+        config.capturesAudio = audio.system
+        config.captureMicrophone = audio.microphone
+        // Empty means the system default input, which is what SCStreamConfiguration
+        // already does when this is left unset.
+        if audio.microphone && !audio.device.isEmpty {
+            config.microphoneCaptureDeviceID = audio.device
+        }
+        // Frame Studio's own sounds are not part of what is being demonstrated. Measured
+        // caveat: this excludes by responsible process, not literally this process. A
+        // helper run from a terminal also silences audio played by that terminal's other
+        // children, which makes a terminal-launched test of system audio look broken.
+        config.excludesCurrentProcessAudio = true
         config.queueDepth = 8
 
         let interruption = Interruption()
@@ -288,6 +415,13 @@ func startRecording(
         let sink = SinkOutput()
         try stream.addStreamOutput(
             sink, type: .screen, sampleHandlerQueue: DispatchQueue(label: "frame-studio.sink"))
+        let audioQueue = DispatchQueue(label: "frame-studio.audio")
+        if audio.system {
+            try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: audioQueue)
+        }
+        if audio.microphone {
+            try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: audioQueue)
+        }
 
         let recConfig = SCRecordingOutputConfiguration()
         recConfig.outputURL = URL(fileURLWithPath: videoPath)
@@ -303,11 +437,31 @@ func startRecording(
             stream: stream, sink: sink, startedAt: startedAt, interruption: interruption,
             outDir: outDir, scale: scale,
             pointsWidth: pointsWidth, pointsHeight: pointsHeight,
-            kind: kind, title: title, window: window, origin: origin)
+            kind: kind, title: title, audio: audio, window: window, origin: origin)
     } catch {
         emitError("could not start recording: \(error.localizedDescription)")
         return nil
     }
+}
+
+// What actually landed on the audio track, not what was asked for. ScreenCaptureKit
+// mixes system audio and the microphone into a single track before it reaches the file,
+// so a level that turns out to be wrong cannot be corrected afterwards. Reporting the
+// peak of each source is the only way the user finds out at all.
+func audioReport(_ session: RecordingSession) -> [String: Any] {
+    var report: [String: Any] = [
+        "system": session.audio.system,
+        "microphone": session.audio.microphone,
+        "device": session.audio.device,
+    ]
+    if session.audio.microphoneBlocked { report["microphoneBlocked"] = true }
+    if session.audio.system {
+        report["systemPeak"] = decibels(session.sink.peaks.peak(.audio))
+    }
+    if session.audio.microphone {
+        report["microphonePeak"] = decibels(session.sink.peaks.peak(.microphone))
+    }
+    return report
 }
 
 func finishRecording(_ session: RecordingSession) async {
@@ -338,6 +492,7 @@ func finishRecording(_ session: RecordingSession) async {
             "videoStartOffset": offset,
             "duration": duration,
             "createdAt": ISO8601DateFormatter().string(from: Date()),
+            "audio": audioReport(session),
         ]
         if let reason = session.interruption.reason { meta["interrupted"] = reason }
         try JSONSerialization.data(withJSONObject: meta, options: [.sortedKeys])
@@ -347,6 +502,7 @@ func finishRecording(_ session: RecordingSession) async {
             "event": "finished",
             "frames": session.sink.frames,
             "duration": duration,
+            "audio": audioReport(session),
         ]
         // Absent on a normal stop, so the bridge only explains itself when something
         // actually went wrong.
@@ -355,6 +511,82 @@ func finishRecording(_ session: RecordingSession) async {
     } catch {
         emitError("could not finalise recording: \(error.localizedDescription)")
     }
+}
+
+// MARK: - microphone check
+
+// Listening to the chosen input before recording, through the SAME path the recording
+// uses. This machine has eight input devices, two of them silent loopbacks, and the
+// system default was a pair of speakers whose microphone recorded at -87 dBFS. Finding
+// that out afterwards costs the take, because the mix cannot be unmade.
+final class MicTest {
+    let stream: SCStream
+    let sink: SinkOutput
+    init(stream: SCStream, sink: SinkOutput) {
+        self.stream = stream
+        self.sink = sink
+    }
+}
+
+func startMicTest(device: String) async -> MicTest? {
+    guard CGPreflightScreenCaptureAccess() else {
+        emitError("Screen Recording is needed before the microphone can be checked.")
+        return nil
+    }
+    guard microphoneAuthorized() else {
+        emitError("macOS has not allowed Frame Studio to use the microphone yet.")
+        return nil
+    }
+    do {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first else {
+            emitError("no display to attach the microphone check to")
+            return nil
+        }
+        let config = SCStreamConfiguration()
+        // A stream is the only way to reach the microphone here, so its video side is
+        // made as small and as slow as it is allowed to be.
+        config.width = 160
+        config.height = 100
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        config.showsCursor = false
+        config.capturesAudio = false
+        config.captureMicrophone = true
+        if !device.isEmpty { config.microphoneCaptureDeviceID = device }
+        config.queueDepth = 3
+
+        let stream = SCStream(
+            filter: SCContentFilter(display: display, excludingWindows: []),
+            configuration: config, delegate: nil)
+        let sink = SinkOutput()
+        try stream.addStreamOutput(
+            sink, type: .microphone,
+            sampleHandlerQueue: DispatchQueue(label: "frame-studio.mic-test"))
+        try await stream.startCapture()
+        emit(["event": "mic-test-started"])
+        return MicTest(stream: stream, sink: sink)
+    } catch {
+        emitError("could not listen to the microphone: \(error.localizedDescription)")
+        return nil
+    }
+}
+
+// uniqueID is what microphoneCaptureDeviceID wants, and localizedName is the only part
+// a person recognises. Enumerating needs no permission, so the list is offered before
+// the microphone grant exists.
+func listAudioInputs() {
+    let discovery = AVCaptureDevice.DiscoverySession(
+        deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)
+    let fallback = AVCaptureDevice.default(for: .audio)?.uniqueID ?? ""
+    let inputs: [[String: Any]] = discovery.devices.map { device in
+        [
+            "id": device.uniqueID,
+            "name": device.localizedName,
+            "isDefault": device.uniqueID == fallback,
+        ]
+    }
+    emit(["event": "audio-inputs", "inputs": inputs])
 }
 
 // MARK: - command loop
@@ -397,8 +629,10 @@ Thread.detachNewThread {
 }
 
 var session: RecordingSession?
+var micTest: MicTest?
 var running = true
 var sampleTicks = 0
+var levelTicks = 0
 
 while running {
     // ScreenCaptureKit delivers through the run loop, so it has to keep turning.
@@ -413,6 +647,31 @@ while running {
             await listWindows()
         case "permissions":
             reportPermissions()
+        case "list-audio-inputs":
+            listAudioInputs()
+        case "mic-test":
+            // Recording owns the microphone once it starts, so the two never overlap.
+            guard session == nil else {
+                emitError("cannot check the microphone while recording")
+                break
+            }
+            if let active = micTest {
+                micTest = nil
+                try? await active.stream.stopCapture()
+            }
+            // Awaited here on purpose, not handed to a detached Task. The loop drives
+            // the main actor, so main-actor work cannot interleave with its synchronous
+            // RunLoop.main.run and a Task would simply never get to run: measured, the
+            // check then never started at all. What makes this await safe is the
+            // authorization guard inside startMicTest, which returns immediately rather
+            // than letting ScreenCaptureKit block on a decision nobody is going to make.
+            micTest = await startMicTest(device: command["device"] as? String ?? "")
+        case "mic-test-stop":
+            if let active = micTest {
+                micTest = nil
+                try? await active.stream.stopCapture()
+            }
+            emit(["event": "mic-test-stopped"])
         case "start":
             guard session == nil else {
                 emitError("already recording")
@@ -438,12 +697,25 @@ while running {
             // Falls back to now so the helper is still usable on its own, which is how
             // the capture tests drive it.
             let startedAt = command["startedAt"] as? Double ?? Date().timeIntervalSince1970
+            var audio = AudioOptions()
+            if let asked = command["audio"] as? [String: Any] {
+                audio.system = asked["system"] as? Bool ?? false
+                audio.microphone = asked["microphone"] as? Bool ?? false
+                audio.device = asked["device"] as? String ?? ""
+            }
+            // The check holds the microphone open, and two streams asking for it at once
+            // is not worth finding out about during a countdown.
+            if let active = micTest {
+                micTest = nil
+                try? await active.stream.stopCapture()
+            }
             session = await startRecording(
                 displayID: displayID.map { CGDirectDisplayID($0) },
                 windowID: windowID.map { CGWindowID($0) },
                 region: region,
                 outDir: outDir,
-                startedAt: startedAt)
+                startedAt: startedAt,
+                audio: audio)
         case "stop":
             guard let active = session else {
                 emitError("not recording")
@@ -452,6 +724,10 @@ while running {
             session = nil
             await finishRecording(active)
         case "quit":
+            if let active = micTest {
+                micTest = nil
+                try? await active.stream.stopCapture()
+            }
             running = false
         default:
             emitError("unknown command: \(String(describing: command["cmd"]))")
@@ -462,6 +738,18 @@ while running {
     if let active = session, active.kind == "window" {
         sampleTicks += 1
         if sampleTicks % 3 == 0 { await active.sampleWindowFrame() }
+    }
+
+    // Emitted here rather than from the sample handler, so all output still comes from
+    // a single thread and two lines of JSON can never interleave.
+    if let active = micTest {
+        levelTicks += 1
+        if levelTicks % 5 == 0 {
+            emit([
+                "event": "mic-level",
+                "peak": decibels(active.sink.peaks.take(.microphone)),
+            ])
+        }
     }
 
     // A display change stops the stream from underneath us. Finalise what we have.
@@ -488,6 +776,9 @@ func reportPermissions() {
     emit([
         "event": "permissions",
         "screenRecording": CGPreflightScreenCaptureAccess(),
+        // Reported alongside, so a disagreement with what Electron sees is visible
+        // rather than something to guess at. Both should be the app's own grant.
+        "microphone": microphoneAuthorized(),
     ])
 }
 

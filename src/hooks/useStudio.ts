@@ -4,6 +4,7 @@ import {
   defaultSettings,
   settingsSchema,
 } from '../../shared/composition';
+import { recordingNotice } from '../../shared/recording';
 import type { ExportOptions, Job, MediaAsset, Settings } from '../../shared/types';
 import { api } from '@/lib/api';
 
@@ -119,7 +120,9 @@ export function useStudio() {
       try {
         const status = await api<{
           recording: boolean;
-          last: { id: string; noCursorData?: boolean } | null;
+          // Typed off recordingNotice so what is fetched and what is reported on cannot
+          // drift apart.
+          last: ({ id: string } & Parameters<typeof recordingNotice>[0]) | null;
         }>('/api/recording/status');
         if (cancelled) return;
         if (status.recording) {
@@ -129,13 +132,10 @@ export function useStudio() {
         setRecording(false);
         if (status.last) {
           await openRecording(status.last.id);
-          // The video looks perfectly fine in this case, so nothing else would tell
-          // the user why their cursor is missing.
-          if (status.last.noCursorData) {
-            setError(
-              'This recording has no cursor data. Enable Accessibility for Frame Studio in System Settings, Privacy and Security, then record again.',
-            );
-          }
+          // A missing cursor track or a silent microphone both leave a video that looks
+          // perfectly fine, so nothing else would ever tell the user.
+          const notice = recordingNotice(status.last);
+          if (notice) setError(notice);
         }
       } catch (reason) {
         if (cancelled) return;

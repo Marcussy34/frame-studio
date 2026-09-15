@@ -18,6 +18,7 @@ const meta: RecordingMeta = {
   videoStartOffset: 0.5,
   duration: 20,
   createdAt: '2026-09-14T00:00:00.000Z',
+  audio: { system: false, microphone: false, device: '' },
 };
 
 const shot = '{"start":1,"end":4,"zoom":2,"focus":"cursor","ease":"snap","why":"the button"}';

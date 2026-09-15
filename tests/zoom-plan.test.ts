@@ -287,6 +287,7 @@ describe('zoomCurveFor', () => {
       videoStartOffset: 0,
       duration: 10,
       createdAt: '2026-09-14T00:00:00.000Z',
+      audio: { system: false, microphone: false, device: '' },
     },
     events: [
       { t: 1, x: 200, y: 150, e: 'd' as const, b: 0 },
@@ -342,6 +343,7 @@ describe('compileZoomPlan opening frame', () => {
         videoStartOffset: 0,
         duration: 10,
         createdAt: '2026-09-14T00:00:00.000Z',
+        audio: { system: false, microphone: false, device: '' },
       },
       events: [{ t: 1, x: 200, y: 150, e: 'd' as const, b: 0 }],
     };

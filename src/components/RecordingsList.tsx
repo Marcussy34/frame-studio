@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Trash, VideoPlay } from 'iconsax-reactjs';
+import { Microphone2, Trash, VideoPlay, VolumeHigh } from 'iconsax-reactjs';
 import { api, formatSize, formatTime } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 
@@ -8,6 +8,7 @@ interface RecordingSummary {
   createdAt: string;
   duration: number;
   bytes: number;
+  audio?: { system: boolean; microphone: boolean };
 }
 
 interface Props {
@@ -66,8 +67,13 @@ export function RecordingsList({ onOpen, refreshKey }: Props) {
             <VideoPlay className="size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-[11px]">{new Date(item.createdAt).toLocaleString()}</p>
-              <p className="text-[10px] text-muted-foreground">
+              <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
                 {formatTime(item.duration)} · {formatSize(item.bytes)}
+                {/* Which sources were on, since the track itself cannot be taken apart. */}
+                {item.audio?.system && <VolumeHigh className="size-3" aria-label="System audio" />}
+                {item.audio?.microphone && (
+                  <Microphone2 className="size-3" aria-label="Microphone" />
+                )}
               </p>
             </div>
             <Button

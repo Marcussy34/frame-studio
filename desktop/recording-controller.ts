@@ -1,4 +1,4 @@
-import { bundlePaths, type RecordingOutcome } from '../shared/recording';
+import { bundlePaths, type AudioOptions, type RecordingOutcome } from '../shared/recording';
 import type { CursorTracker } from './cursor-track';
 import type { Recorder } from './recorder-bridge';
 
@@ -23,6 +23,7 @@ export interface RecordingController {
     windowID?: number;
     region?: { x: number; y: number; width: number; height: number };
     outDir: string;
+    audio?: AudioOptions;
   }): Promise<void>;
   stop(): Promise<RecordingResult | null>;
   isRecording(): boolean;

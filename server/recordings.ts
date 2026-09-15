@@ -7,6 +7,9 @@ export interface RecordingSummary {
   createdAt: string;
   duration: number;
   bytes: number;
+  // Which sound sources were switched on. The two are mixed into one track at capture
+  // time, so this is the only record of what went into it.
+  audio: { system: boolean; microphone: boolean };
 }
 
 async function bundleBytes(dir: string): Promise<number> {
@@ -34,6 +37,7 @@ export async function listRecordings(root: string): Promise<RecordingSummary[]> 
         createdAt: meta.createdAt,
         duration: meta.duration,
         bytes: await bundleBytes(dir),
+        audio: { system: meta.audio.system, microphone: meta.audio.microphone },
       });
     } catch {
       // Not a valid bundle, most likely a recording that never finished. Skip it

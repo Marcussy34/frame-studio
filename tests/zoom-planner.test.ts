@@ -36,6 +36,7 @@ function track(): CursorTrack {
       videoStartOffset: 0.5,
       duration: 25,
       createdAt: '2026-09-14T00:00:00.000Z',
+      audio: { system: false, microphone: false, device: '' },
     },
     events,
   };
