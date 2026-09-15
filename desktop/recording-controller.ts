@@ -27,6 +27,12 @@ export interface RecordingController {
   }): Promise<void>;
   stop(): Promise<RecordingResult | null>;
   isRecording(): boolean;
+  // True from the moment a recording starts until its outcome has been published.
+  // isRecording goes false the instant a stop begins, but finalising the movie and
+  // writing the cursor track take time after that, and a renderer told "not recording"
+  // during that window reads the PREVIOUS recording's outcome and opens the wrong
+  // bundle with the wrong warning.
+  isBusy(): boolean;
 }
 
 // The Electron wiring is injected so this logic can be tested without a packaged app,
@@ -104,5 +110,6 @@ export function createRecordingController(deps: ControllerDeps): RecordingContro
     },
     stop,
     isRecording: () => recording,
+    isBusy: () => recording || stopping !== null,
   };
 }

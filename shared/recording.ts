@@ -186,7 +186,10 @@ export function recordingNotice(outcome: {
     return 'This recording did not finish writing, so it may be short or unreadable. Try recording again, and give it a moment to finish before opening it.';
   }
   if (outcome.noCursorData) {
-    return 'This recording has no cursor data. Enable Accessibility for Frame Studio in System Settings, Privacy and Security, then record again.';
+    // Two causes, and the message has to fit both: the pointer genuinely never moved, or
+    // the input hook was never fed. Blaming Accessibility outright reads as a fault when
+    // it is already granted and the user simply held still.
+    return 'This recording captured no pointer movement, so the cursor cannot be redrawn. If you did move the mouse, Frame Studio needs Accessibility: enable it in System Settings, Privacy and Security, then record again.';
   }
   const audio = outcome.audio;
   if (!audio) return null;

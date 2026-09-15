@@ -136,6 +136,11 @@ export function useStudio() {
           // perfectly fine, so nothing else would ever tell the user.
           const notice = recordingNotice(status.last);
           if (notice) setError(notice);
+        } else {
+          // The desktop side drops the previous outcome when a recording starts, so
+          // reaching here means this one finished without producing anything. Saying so
+          // beats leaving the screen unchanged and the user guessing.
+          setError('That recording did not finish. Nothing was saved, so please try again.');
         }
       } catch (reason) {
         if (cancelled) return;

@@ -141,6 +141,45 @@ describe('createRecordingService', () => {
     expect((await recording.requestMicrophoneAccess()).microphone).toBe('granted');
   });
 
+  it('stays busy until the outcome is published, so a poll cannot read the one before', async () => {
+    // isRecording goes false the instant a stop begins, but the movie is still being
+    // finalised and the cursor track still being written. A renderer told "not
+    // recording" in that window reads the PREVIOUS outcome and opens the wrong bundle
+    // with the wrong warning, which is exactly what happened in practice.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { service: recording } = await service({
+      recorder: recorder({
+        stop: vi.fn(async () => {
+          await held;
+          return { frames: 12, duration: 2 };
+        }),
+      }),
+    });
+    await recording.start({ displayID: 1 });
+    const stopping = recording.stop();
+    // Mid stop: the helper has not finished, so nothing may be reported as ready yet.
+    expect(recording.status().recording).toBe(true);
+    expect(recording.status().last).toBeNull();
+    release();
+    await stopping;
+    expect(recording.status().recording).toBe(false);
+    expect(recording.status().last?.frames).toBe(12);
+  });
+
+  it('forgets the previous outcome when a new recording starts', async () => {
+    // A recording that fails before publishing anything must leave the renderer with
+    // nothing, rather than the recording before it.
+    const { service: recording } = await service();
+    await recording.start({ displayID: 1 });
+    await recording.stop();
+    expect(recording.status().last).not.toBeNull();
+    await recording.start({ displayID: 1 });
+    expect(recording.status().last).toBeNull();
+  });
+
   it('creates a bundle directory and reports the outcome under its id', async () => {
     const { service: recording, root } = await service();
     const { id } = await recording.start({ displayID: 1 });

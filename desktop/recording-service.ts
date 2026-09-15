@@ -142,6 +142,10 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
       const outDir = join(deps.root, id);
       await mkdir(outDir, { recursive: true });
       currentId = id;
+      // Dropped on purpose. If this recording fails before it publishes an outcome, the
+      // renderer must see nothing rather than the one before it, which it would happily
+      // open and describe as though it were the recording just made.
+      last = null;
       try {
         await controller.start({ ...target, outDir });
       } catch (error) {
@@ -161,7 +165,10 @@ export function createRecordingService(deps: RecordingServiceDeps): RecordingSer
     },
 
     status() {
-      return { recording: controller.isRecording(), last };
+      // isBusy, not isRecording: the renderer polls this to learn when its recording is
+      // ready, and the outcome is published after the stop finishes rather than when it
+      // begins.
+      return { recording: controller.isBusy(), last };
     },
   };
 }

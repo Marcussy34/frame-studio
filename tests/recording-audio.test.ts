@@ -137,6 +137,8 @@ describe('recordingNotice', () => {
       audio: { system: false, microphone: true, device: '', microphonePeak: -120 },
     });
     expect(notice).toMatch(/Accessibility/);
+    // It must also allow for the pointer simply not having moved, which is not a fault.
+    expect(notice).toMatch(/If you did move the mouse/);
   });
 });
 
