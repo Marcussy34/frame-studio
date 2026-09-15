@@ -41,6 +41,15 @@ export interface ZoomPlannerDeps {
   ask?: typeof runAgy;
 }
 
+// What the user reads when planning falls back. A failing child process reports the
+// whole command line and every line of its stderr, and pasting that into a panel is
+// not telling someone what happened. The first line is the part that means something.
+function shortNote(message: string): string {
+  const first = message.split('\n').find((line) => line.trim().length) ?? message;
+  const trimmed = first.trim();
+  return trimmed.length > 180 ? `${trimmed.slice(0, 177)}...` : trimmed;
+}
+
 export function createZoomPlanner(deps: ZoomPlannerDeps = {}) {
   const locate = deps.locate ?? (() => findAgy());
   const ask = deps.ask ?? runAgy;
@@ -113,7 +122,7 @@ export function createZoomPlanner(deps: ZoomPlannerDeps = {}) {
       } catch (error) {
         if (request.signal.aborted) throw error;
         // Quota, auth, timeout and a missing CLI all land here already translated.
-        return { plan: draft, note: (error as Error).message };
+        return { plan: draft, note: shortNote((error as Error).message) };
       } finally {
         await cleanup?.().catch(() => {});
         request.progress(1);

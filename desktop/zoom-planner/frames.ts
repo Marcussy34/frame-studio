@@ -6,7 +6,7 @@
 // quiet stretches are not invisible.
 
 import { execFile } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CursorEvent } from '../../shared/recording';
@@ -101,8 +101,12 @@ export async function extractFrames(options: {
 }): Promise<ExtractedFrames> {
   const { video, directory, times, ffmpeg, width = 640, signal } = options;
   await mkdir(directory, { recursive: true });
+  // Only the moments that actually produced an image. The schedule is built from the
+  // cursor track, which runs longer than the video, so some of it can fall past the end.
+  const kept: number[] = [];
   for (const t of times) {
     signal?.throwIfAborted();
+    const frame = join(directory, frameName(t));
     // -ss before -i seeks by keyframe, which is approximate but fast. Exactness does
     // not matter here: the point is what was roughly on screen at that moment.
     await execute(ffmpeg, [
@@ -116,16 +120,31 @@ export async function extractFrames(options: {
       '-frames:v',
       '1',
       '-vf',
-      `scale=${width}:-2`,
+      // Frame Studio recordings are limited range (color_range=tv), and the mjpeg
+      // encoder refuses that outright: "Non full-range YUV is non-standard". The range
+      // is expanded properly by scale rather than just relabelled, so the frames the
+      // model sees have the contrast the screen actually had.
+      `scale=${width}:-2:out_range=pc,format=yuvj420p`,
       '-q:v',
       '6',
       '-y',
-      join(directory, frameName(t)),
-    ]);
+      frame,
+    ]).catch(() => undefined);
+    // A seek past the last frame writes nothing and still exits cleanly, so the file has
+    // to be checked rather than the exit code trusted. Passing an empty or absent frame
+    // on would hand the model a filename for a moment it cannot see.
+    const written = await stat(frame)
+      .then((info) => info.size > 0)
+      .catch(() => false);
+    if (written) kept.push(t);
+    else await rm(frame, { force: true }).catch(() => {});
+  }
+  if (!kept.length) {
+    throw new Error('None of the sampled moments could be read out of this recording.');
   }
   return {
     directory,
-    times,
+    times: kept,
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };
 }

@@ -1,7 +1,9 @@
 // Wires the zoom planner into the local API: reads a bundle off disk, plans it, and
 // writes the result back as the bundle's fourth member.
 
+import { execFile } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import type { ZoomSettings } from '../shared/cursor';
 import {
   bundlePaths,
@@ -24,6 +26,35 @@ const PLANNING_SETTINGS: ZoomSettings = { enabled: true, strength: PLAN_CEILING,
 export interface ZoomPlanServiceDeps {
   planner: ZoomPlanner;
   ffmpeg: string;
+  ffprobe: string;
+}
+
+const execute = promisify(execFile);
+
+// meta.duration is wall clock from the first frame to the end of the recording, and the
+// movie is often shorter: ScreenCaptureKit stops emitting frames when nothing on screen
+// changes, so a still final stretch is simply not in the file. Measured on a real
+// recording: meta said 25.62s, the movie was 20.90s.
+//
+// Planning against the wall clock asks for frames that do not exist and produces shots
+// past the end of the video, so the movie's own length is what bounds a plan.
+async function videoDuration(ffprobe: string, video: string, fallback: number): Promise<number> {
+  try {
+    const { stdout } = await execute(ffprobe, [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'csv=p=0',
+      video,
+    ]);
+    const seconds = Number(stdout.trim());
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : fallback;
+  } catch {
+    // A plan against a slightly long clip is better than no plan at all.
+    return fallback;
+  }
 }
 
 async function readBundle(directory: string): Promise<CursorTrack> {
@@ -46,11 +77,13 @@ export function createZoomPlanService(deps: ZoomPlanServiceDeps): ZoomPlanServic
         height: Math.round(track.meta.displayPoints.h * track.meta.displayScale),
       };
 
+      const duration = await videoDuration(deps.ffprobe, paths.video, track.meta.duration);
+
       const outcome = await deps.planner.plan({
         video: paths.video,
         track,
         settings: PLANNING_SETTINGS,
-        duration: track.meta.duration,
+        duration,
         source,
         ffmpeg: deps.ffmpeg,
         useFrames: request.useFrames,

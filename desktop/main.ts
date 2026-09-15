@@ -169,7 +169,7 @@ else {
     // capture helper disables recording rather than breaking the app.
     const zoomPlanner = createZoomPlanner();
     const planner = zoomPlanner.available()
-      ? createZoomPlanService({ planner: zoomPlanner, ffmpeg })
+      ? createZoomPlanService({ planner: zoomPlanner, ffmpeg, ffprobe })
       : undefined;
     if (!planner)
       console.warn('Camera planning is unavailable: the Antigravity CLI was not found.');

@@ -1,5 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { clickTimesOf, frameName, frameSchedule, MAX_FRAMES } from '../desktop/zoom-planner/frames';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { afterAll, describe, expect, it } from 'vitest';
+import {
+  clickTimesOf,
+  extractFrames,
+  frameName,
+  frameSchedule,
+  MAX_FRAMES,
+} from '../desktop/zoom-planner/frames';
 import type { CursorEvent } from '../shared/recording';
 
 describe('frameSchedule', () => {
@@ -87,4 +98,76 @@ describe('clickTimesOf', () => {
     ];
     expect(clickTimesOf(events)).toEqual([2]);
   });
+});
+
+describe('extractFrames', () => {
+  const directories: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(directories.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  // A limited range clip, which is what Frame Studio records. The mjpeg encoder refuses
+  // that outright, so extraction has to convert the range rather than pass it through.
+  async function limitedRangeClip(seconds: number): Promise<{ video: string; dir: string }> {
+    const dir = await mkdtemp(join(tmpdir(), 'frame-studio-frames-'));
+    directories.push(dir);
+    const video = join(dir, 'clip.mov');
+    await promisify(execFile)('ffmpeg', [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      `testsrc=size=320x240:rate=10:duration=${seconds}`,
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-color_range',
+      'tv',
+      '-y',
+      video,
+    ]);
+    return { video, dir };
+  }
+
+  it('reads frames out of a limited range recording', async () => {
+    // Without the range conversion ffmpeg fails with "Non full-range YUV is
+    // non-standard" and not a single frame comes out.
+    const { video, dir } = await limitedRangeClip(3);
+    const extracted = await extractFrames({
+      video,
+      directory: join(dir, 'frames'),
+      times: [0.5, 1.5, 2.5],
+      ffmpeg: 'ffmpeg',
+    });
+    expect(extracted.times).toEqual([0.5, 1.5, 2.5]);
+    for (const t of extracted.times) {
+      expect((await stat(join(dir, 'frames', frameName(t)))).size).toBeGreaterThan(0);
+    }
+  }, 60_000);
+
+  it('drops moments that fall past the end rather than naming an empty frame', async () => {
+    // The schedule is built from the cursor track, which runs longer than the movie.
+    // Seeking past the last frame writes nothing and still exits cleanly, so a frame
+    // that was never written must not be offered to the model as though it existed.
+    const { video, dir } = await limitedRangeClip(2);
+    const extracted = await extractFrames({
+      video,
+      directory: join(dir, 'frames'),
+      times: [0.5, 1.5, 9],
+      ffmpeg: 'ffmpeg',
+    });
+    expect(extracted.times).toEqual([0.5, 1.5]);
+    await expect(stat(join(dir, 'frames', frameName(9)))).rejects.toThrow();
+  }, 60_000);
+
+  it('says so when nothing at all could be read', async () => {
+    const { video, dir } = await limitedRangeClip(1);
+    await expect(
+      extractFrames({ video, directory: join(dir, 'frames'), times: [30, 40], ffmpeg: 'ffmpeg' }),
+    ).rejects.toThrow(/none of the sampled moments/i);
+  }, 60_000);
 });

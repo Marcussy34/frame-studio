@@ -258,6 +258,32 @@ Two things the fix depends on:
   wedge the helper. Giving up sets `unfinalised` on the finished event, which the app
   reports rather than leaving the user to discover an unreadable file.
 
+### meta.duration is wall clock, and the movie is often shorter
+
+ScreenCaptureKit stops emitting frames when nothing on screen changes, so a recording
+that ends on a still image produces a movie shorter than the time that elapsed. Measured
+on a real 25.6 second recording: the movie was **20.9 seconds**.
+
+`meta.duration` is the wall clock figure, because the cursor track spans it. Anything that
+has to line up with the pixels must use the movie's own duration instead. Camera planning
+did not, and asked ffmpeg for a frame at 21.0s of a 20.9s file, which writes nothing and
+**still exits cleanly**, so the failure was silent until the mjpeg encoder complained about
+something else entirely.
+
+### Recordings are limited range, and mjpeg refuses that
+
+Frame Studio recordings come out `yuv420p` with `color_range=tv`. The mjpeg encoder rejects
+limited range input outright:
+
+```
+Non full-range YUV is non-standard, set strict_std_compliance to at most unofficial
+ff_frame_thread_encoder_init failed
+```
+
+So any JPEG extracted from a recording needs the range expanded, not relabelled:
+`scale=W:-2:out_range=pc,format=yuvj420p`. This never showed up while camera planning was
+tested against synthetic clips, which are full range.
+
 ### The system default input is often not a microphone
 
 On the development machine `AVCaptureDevice.default(for: .audio)` was a pair of USB
